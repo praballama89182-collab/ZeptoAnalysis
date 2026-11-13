@@ -165,12 +165,15 @@ def get_authoritative_totals(channel_reports: dict) -> dict:
     Prevents double-counting when multiple granularity files are uploaded for the same channel.
     Priority order for true channel totals:
     1. Campaign Level
-    2. City Level
+    2. Product Level
     3. Category Level
-    4. Product Level
+    4. City Level
     5. Keyword Level
     """
-    priority = ["Campaign Level", "City Level", "Category Level", "Product Level", "Keyword Level"]
+    # Product and Category reconcile exactly with Campaign; City does not
+    # (city totals are lower — some spend has no city attributed), so City
+    # sits below them. Keyword is a subset and is always last.
+    priority = ["Campaign Level", "Product Level", "Category Level", "City Level", "Keyword Level"]
     for level in priority:
         if level in channel_reports and not channel_reports[level].empty:
             df = channel_reports[level]
@@ -205,6 +208,13 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
             else:
                 df_raw = pd.read_excel(f, engine="openpyxl")
             level = identify_zepto_report(df_raw)
+            if level == "Unknown Report":
+                st.sidebar.warning(
+                    f"Could not identify {f.name} as a Campaign, City, Product, "
+                    f"Category or Keyword report (columns: "
+                    f"{', '.join(str(c) for c in df_raw.columns[:8])}). It was skipped."
+                )
+                continue
             df_clean = clean_numeric_cols(df_raw)
             df_clean["Ad Format"] = ad_format_label
 
@@ -353,7 +363,7 @@ def main():
                 "Sales Share %": round(sb_tot["revenue"] / comb_rev * 100, 2) if comb_rev > 0 else 0.0,
             }
         ])
-        st.dataframe(style_table(split_df), use_container_width=True, hide_index=True)
+        st.dataframe(style_table(split_df), width="stretch", hide_index=True)
         export_sheets["Channel_Split_SP_vs_SB"] = split_df
 
     st.markdown("---")
@@ -462,7 +472,7 @@ def main():
             if camp_search:
                 disp_camp = disp_camp[disp_camp["CampaignName"].str.contains(camp_search, case=False, na=False)]
 
-            st.dataframe(style_table(disp_camp), use_container_width=True, hide_index=True)
+            st.dataframe(style_table(disp_camp), width="stretch", hide_index=True)
         else:
             st.info("Upload a **Campaign Level** report to view campaign-wise breakdown.")
 
@@ -475,7 +485,7 @@ def main():
             if city_fmt != "All":
                 disp_city = disp_city[disp_city["Ad Format"] == city_fmt]
 
-            st.dataframe(style_table(disp_city), use_container_width=True, hide_index=True)
+            st.dataframe(style_table(disp_city), width="stretch", hide_index=True)
             col_ci1, col_ci2 = st.columns(2)
             with col_ci1:
                 st.markdown("##### Spend by City")
@@ -504,7 +514,7 @@ def main():
                     disp_prod["ProductName"].str.contains(p_search, case=False, na=False) |
                     disp_prod.get("Category", pd.Series("", index=disp_prod.index)).str.contains(p_search, case=False, na=False)
                 ]
-            st.dataframe(style_table(disp_prod), use_container_width=True, hide_index=True)
+            st.dataframe(style_table(disp_prod), width="stretch", hide_index=True)
         else:
             st.info("Upload a **Product Level** report to view SKU performance.")
 
@@ -517,7 +527,7 @@ def main():
             if cat_fmt != "All":
                 disp_cat = disp_cat[disp_cat["Ad Format"] == cat_fmt]
 
-            st.dataframe(style_table(disp_cat), use_container_width=True, hide_index=True)
+            st.dataframe(style_table(disp_cat), width="stretch", hide_index=True)
         else:
             st.info("Upload a **Category Level** report to view category-level spend and ROAS.")
 
@@ -542,7 +552,7 @@ def main():
             if match_sel != "All" and "Match Type" in disp_kw.columns:
                 disp_kw = disp_kw[disp_kw["Match Type"] == match_sel]
 
-            st.dataframe(style_table(disp_kw), use_container_width=True, hide_index=True)
+            st.dataframe(style_table(disp_kw), width="stretch", hide_index=True)
         else:
             st.info("Upload a **Keyword Level** report to view keyword performance.")
 
@@ -554,7 +564,7 @@ def main():
             waste_kw = df_kw_view[(df_kw_view["Orders"] == 0) & (df_kw_view["Spend"] >= waste_spend_min)].sort_values(by="Spend", ascending=False)
             st.markdown(f"#### 🛑 High-Spend Zero-Order Keywords (Spend ≥ ₹{waste_spend_min:,}) — `{len(waste_kw)} found`")
             if not waste_kw.empty:
-                st.dataframe(style_table(waste_kw), use_container_width=True, hide_index=True)
+                st.dataframe(style_table(waste_kw), width="stretch", hide_index=True)
                 export_sheets["Wasted_Keywords"] = waste_kw
             else:
                 st.success("No keywords exceeded your zero-order spend threshold.")
@@ -563,7 +573,7 @@ def main():
             scale_kw = df_kw_view[(df_kw_view["ROAS"] >= target_roas) & (df_kw_view["Orders"] >= 3)].sort_values(by="Revenue", ascending=False)
             st.markdown(f"#### 🚀 Scale Winners (ROAS ≥ {target_roas:.1f}x & Orders ≥ 3) — `{len(scale_kw)} found`")
             if not scale_kw.empty:
-                st.dataframe(style_table(scale_kw), use_container_width=True, hide_index=True)
+                st.dataframe(style_table(scale_kw), width="stretch", hide_index=True)
                 export_sheets["Scale_Winners"] = scale_kw
 
     # MASTER EXCEL DOWNLOAD
