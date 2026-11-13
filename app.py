@@ -2,7 +2,7 @@
 Zepto Ads Intelligence (Sponsored Products + Sponsored Brands)
 --------------------------------------------------------------
 Auto-identifies Campaign, City, Product, Category, and Keyword level Zepto reports upon upload
-for both Sponsored Products (SP) and Sponsored Brands (SB - PCA/SBV), computes combined &
+for both Sponsored Products (SP) and Sponsored Brands (SB), computes combined &
 channel-level KPIs without double-counting, and generates actionable insights.
 """
 
@@ -74,7 +74,6 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [c.strip() for c in df.columns]
 
-    # Sponsored Brands files omit 'Cpc' column natively; handled dynamically via Spend/Clicks
     num_candidates = [
         "Atc", "Clicks", "Cpc", "Cpm", "Ctr", "Daily_budget",
         "Impressions", "New_to_brand_user_percentage", "Orders",
@@ -85,13 +84,11 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-    # Standardize Campaign Name column across Campaign-level ('CampaignName') and Entity-level ('Campaign_name')
     if "CampaignName" in df.columns and "Campaign_name" not in df.columns:
         df["Campaign_name"] = df["CampaignName"]
     elif "Campaign_name" in df.columns and "CampaignName" not in df.columns:
         df["CampaignName"] = df["Campaign_name"]
 
-    # Parse Strategy / Format Tag
     if "CampaignName" in df.columns:
         def extract_tag(name: str) -> str:
             s = str(name).strip()
@@ -218,7 +215,7 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
 
             detected_log.append((f.name, level, len(df_clean)))
         except Exception as e:
-            st.sidebar.error(f"Failed reading {f.name}: {e}")
+            st.sidebar.error(f"Failed reading {f.name}: {e}. Make sure openpyxl is installed (`pip install openpyxl`).")
     return reports, detected_log
 
 
@@ -385,12 +382,12 @@ def main():
         raw_city = merged_levels["City Level"].copy()
         city_col = next((c for c in raw_city.columns if c.strip().lower() in ["city", "cityname"]), "City")
         agg_dict = {
-            "Campaign_name": "nunique", "Impressions": "sum", "Clicks": "sum",
+            "Impressions": "sum", "Clicks": "sum",
             "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
             "Same_skus": "sum", "Other_skus": "sum"
         }
         agg_dict = {k: v for k, v in agg_dict.items() if k in raw_city.columns}
-        df_city_view = raw_city.groupby(["Ad Format", city_col], as_index=False).agg(agg_dict).rename(columns={"Campaign_name": "Campaigns", city_col: "City"})
+        df_city_view = raw_city.groupby(["Ad Format", city_col], as_index=False).agg(agg_dict).rename(columns={city_col: "City"})
         df_city_view = compute_metrics(df_city_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["City_Performance"] = df_city_view
 
@@ -487,7 +484,7 @@ def main():
                 st.markdown("##### Revenue by City")
                 st.bar_chart(disp_city.groupby("City")["Revenue"].sum())
         else:
-            st.info("Upload a **City Level** report to view geo-performance breakdown across cities.")
+            st.info("Upload a **City Level** report (`CityName` column) to view geo-performance breakdown across cities.")
 
     # TAB 3: PRODUCT LEVEL
     with tabs[2]:
