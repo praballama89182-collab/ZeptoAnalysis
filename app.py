@@ -1,7 +1,7 @@
 """
 Zepto Ads Intelligence (Sponsored Products + Sponsored Brands)
 --------------------------------------------------------------
-Auto-identifies Campaign, Product, Category, Keyword, and City level Zepto reports upon upload
+Auto-identifies Campaign, City, Product, Category, and Keyword level Zepto reports upon upload
 for both Sponsored Products (SP) and Sponsored Brands (SB - PCA/SBV), computes combined &
 channel-level KPIs without double-counting, and generates actionable insights.
 """
@@ -50,14 +50,14 @@ st.markdown("""
 def identify_zepto_report(df: pd.DataFrame) -> str:
     """
     Auto-detects Zepto report granularity based on exact column signatures across SP and SB:
-    - City Level: contains City column
+    - City Level: contains City / CityName column
     - Product Level: contains ProductID / ProductName
     - Keyword Level: contains KeywordName / KeywordMatchType
     - Category Level: contains Category (without ProductID)
     - Campaign Level: contains CampaignName + CampaignType / Daily_budget / Status
     """
     cols = {c.strip().lower() for c in df.columns}
-    if "city" in cols:
+    if "city" in cols or "cityname" in cols:
         return "City Level"
     if "productid" in cols or "productname" in cols:
         return "Product Level"
@@ -191,46 +191,10 @@ def get_authoritative_totals(channel_reports: dict) -> dict:
 
 def export_excel_workbook(sheets_dict: dict) -> bytes:
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        wb = writer.book
-        hdr_fmt = wb.add_format({
-            "bg_color": "#3B0764", "font_color": "#FFFFFF", "bold": True,
-            "align": "center", "valign": "middle", "border": 1
-        })
-        cell_fmt = wb.add_format({"align": "center", "valign": "middle", "border": 1})
-        num_fmt = wb.add_format({"align": "center", "valign": "middle", "border": 1, "num_format": "0.00"})
-
-        dec_set = {
-            "Spend", "Revenue", "ROAS", "Robas", "ACOS %", "CTR %",
-            "CPC", "CPM", "ATC Rate %", "CVR %", "AOV", "Halo Share %",
-            "Daily_budget", "Spend Share %", "Sales Share %"
-        }
-
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
         for name, df in sheets_dict.items():
-            if df is None or df.empty:
-                continue
-            sheet_title = name[:31]
-            df.to_excel(writer, sheet_name=sheet_title, index=False)
-            ws = writer.sheets[sheet_title]
-            ws.freeze_panes(1, 1)
-
-            for c_idx, col_name in enumerate(df.columns):
-                ws.write(0, c_idx, col_name, hdr_fmt)
-
-            for r_idx in range(len(df)):
-                for c_idx, col_name in enumerate(df.columns):
-                    val = df.iloc[r_idx, c_idx]
-                    if pd.isna(val):
-                        ws.write(r_idx + 1, c_idx, "", cell_fmt)
-                    elif col_name in dec_set and isinstance(val, (int, float)):
-                        ws.write_number(r_idx + 1, c_idx, round(float(val), 2), num_fmt)
-                    else:
-                        ws.write(r_idx + 1, c_idx, val, cell_fmt)
-
-            for i, col in enumerate(df.columns):
-                max_len = max(df[col].astype(str).map(len).max(), len(str(col))) + 4
-                ws.set_column(i, i, min(max(max_len, 14), 38))
-
+            if df is not None and not df.empty:
+                df.to_excel(writer, sheet_name=name[:31], index=False)
     return output.getvalue()
 
 
@@ -242,7 +206,7 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
             if f.name.lower().endswith(".csv"):
                 df_raw = pd.read_csv(f)
             else:
-                df_raw = pd.read_excel(f)
+                df_raw = pd.read_excel(f, engine="openpyxl")
             level = identify_zepto_report(df_raw)
             df_clean = clean_numeric_cols(df_raw)
             df_clean["Ad Format"] = ad_format_label
@@ -419,7 +383,7 @@ def main():
     df_city_view = pd.DataFrame()
     if "City Level" in merged_levels:
         raw_city = merged_levels["City Level"].copy()
-        city_col = next((c for c in raw_city.columns if c.strip().lower() == "city"), "City")
+        city_col = next((c for c in raw_city.columns if c.strip().lower() in ["city", "cityname"]), "City")
         agg_dict = {
             "Campaign_name": "nunique", "Impressions": "sum", "Clicks": "sum",
             "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
