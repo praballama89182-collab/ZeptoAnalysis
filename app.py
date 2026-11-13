@@ -1,5 +1,5 @@
 """
-Zepto Ads Intelligence & Performance Analyzer (Sponsored Products + Sponsored Brands)
+Zepto Ads Intelligence 
 -----------------------------------------------------------------------------------
 Auto-identifies Campaign, Product, Category, and Keyword level Zepto reports upon upload
 for both Sponsored Products (SP) and Sponsored Brands (SB - PCA/SBV), computes combined &
