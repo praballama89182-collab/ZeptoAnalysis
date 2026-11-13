@@ -1,7 +1,7 @@
 """
 Zepto Ads Intelligence (Sponsored Products + Sponsored Brands)
 --------------------------------------------------------------
-Auto-identifies Campaign, Product, Category, and Keyword level Zepto reports upon upload
+Auto-identifies Campaign, Product, Category, Keyword, and City level Zepto reports upon upload
 for both Sponsored Products (SP) and Sponsored Brands (SB - PCA/SBV), computes combined &
 channel-level KPIs without double-counting, and generates actionable insights.
 """
@@ -50,19 +50,22 @@ st.markdown("""
 def identify_zepto_report(df: pd.DataFrame) -> str:
     """
     Auto-detects Zepto report granularity based on exact column signatures across SP and SB:
+    - City Level: contains City column
     - Product Level: contains ProductID / ProductName
     - Keyword Level: contains KeywordName / KeywordMatchType
     - Category Level: contains Category (without ProductID)
     - Campaign Level: contains CampaignName + CampaignType / Daily_budget / Status
     """
-    cols = {c.strip() for c in df.columns}
-    if "ProductID" in cols or "ProductName" in cols:
+    cols = {c.strip().lower() for c in df.columns}
+    if "city" in cols:
+        return "City Level"
+    if "productid" in cols or "productname" in cols:
         return "Product Level"
-    if "KeywordName" in cols or "KeywordMatchType" in cols:
+    if "keywordname" in cols or "keywordmatchtype" in cols:
         return "Keyword Level"
-    if "Category" in cols and "ProductID" not in cols:
+    if "category" in cols and "productid" not in cols:
         return "Category Level"
-    if "CampaignName" in cols or "CampaignType" in cols or "Daily_budget" in cols:
+    if "campaignname" in cols or "campaigntype" in cols or "daily_budget" in cols:
         return "Campaign Level"
     return "Unknown Report"
 
@@ -88,7 +91,7 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
     elif "Campaign_name" in df.columns and "CampaignName" not in df.columns:
         df["CampaignName"] = df["Campaign_name"]
 
-    # Parse Strategy / Format Tag (handles pipe-delimited 'SPA | ...' and underscore-delimited 'HM_..._PCA_...')
+    # Parse Strategy / Format Tag
     if "CampaignName" in df.columns:
         def extract_tag(name: str) -> str:
             s = str(name).strip()
@@ -104,7 +107,7 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """Computes clean funnel & profitability metrics (including CPC for SB where Cpc column is absent)."""
+    """Computes clean funnel & profitability metrics."""
     df = df.copy()
     spend = df["Spend"] if "Spend" in df.columns else 0
     rev = df["Revenue"] if "Revenue" in df.columns else 0
@@ -164,12 +167,13 @@ def get_authoritative_totals(channel_reports: dict) -> dict:
     """
     Prevents double-counting when multiple granularity files are uploaded for the same channel.
     Priority order for true channel totals:
-    1. Campaign Level (exact account-wide total)
-    2. Category Level (exact account-wide total)
-    3. Product Level (exact account-wide total)
-    4. Keyword Level (keyword-targeted subset only; used as fallback if no other file exists)
+    1. Campaign Level
+    2. City Level
+    3. Category Level
+    4. Product Level
+    5. Keyword Level
     """
-    priority = ["Campaign Level", "Category Level", "Product Level", "Keyword Level"]
+    priority = ["Campaign Level", "City Level", "Category Level", "Product Level", "Keyword Level"]
     for level in priority:
         if level in channel_reports and not channel_reports[level].empty:
             df = channel_reports[level]
@@ -230,10 +234,7 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
     return output.getvalue()
 
 
-# --- FILE INGESTION HELPER ---
-
 def parse_uploaded_files(uploaded_files, ad_format_label: str):
-    """Reads multiple files, identifies their report level, and tags them with SP or SB."""
     reports = {}
     detected_log = []
     for f in uploaded_files:
@@ -257,8 +258,6 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
     return reports, detected_log
 
 
-# --- MAIN APPLICATION ---
-
 def main():
     with st.sidebar:
         st.title("⚡ Zepto Ads Intelligence")
@@ -267,7 +266,7 @@ def main():
 
         st.subheader("1. Sponsored Products (SP)")
         sp_files = st.file_uploader(
-            "Upload SP Reports (Campaign, Product, Category, Keyword)",
+            "Upload SP Reports (Campaign, City, Product, Category, Keyword)",
             type=["xlsx", "xls", "csv"],
             accept_multiple_files=True,
             key="sp_uploader"
@@ -275,7 +274,7 @@ def main():
 
         st.subheader("2. Sponsored Brands (SB)")
         sb_files = st.file_uploader(
-            "Upload SB Reports (Campaign, Product, Category, Keyword)",
+            "Upload SB Reports (Campaign, City, Product, Category, Keyword)",
             type=["xlsx", "xls", "csv"],
             accept_multiple_files=True,
             key="sb_uploader"
@@ -289,7 +288,6 @@ def main():
     sp_reports, sp_log = parse_uploaded_files(sp_files, "Sponsored Products") if sp_files else ({}, [])
     sb_reports, sb_log = parse_uploaded_files(sb_files, "Sponsored Brands") if sb_files else ({}, [])
 
-    # Show auto-identified file badges in sidebar
     if sp_log or sb_log:
         with st.sidebar:
             st.markdown("---")
@@ -301,10 +299,9 @@ def main():
 
     if not sp_reports and not sb_reports:
         st.title("⚡ Zepto Ads Intelligence")
-        st.info("👈 Upload one or more **Sponsored Products (SP)** or **Sponsored Brands (SB)** Excel/CSV reports in the sidebar to begin. The app automatically detects Campaign, Product, Category, and Keyword files.")
+        st.info("👈 Upload one or more **Sponsored Products (SP)** or **Sponsored Brands (SB)** Excel/CSV reports in the sidebar to begin. The app automatically detects Campaign, City, Product, Category, and Keyword files.")
         return
 
-    # --- BRAND FILTER (IF MULTIPLE BRANDS EXIST) ---
     all_dfs = list(sp_reports.values()) + list(sb_reports.values())
     brands = sorted({b for d in all_dfs if "BrandName" in d.columns for b in d["BrandName"].dropna().unique()})
     if len(brands) > 1:
@@ -316,9 +313,8 @@ def main():
             if "BrandName" in sb_reports[k].columns:
                 sb_reports[k] = sb_reports[k][sb_reports[k]["BrandName"].isin(selected_brands)]
 
-    # --- MERGE REPORTS BY GRANULARITY LEVEL ---
     merged_levels = {}
-    for lvl in ["Campaign Level", "Product Level", "Category Level", "Keyword Level"]:
+    for lvl in ["Campaign Level", "City Level", "Product Level", "Category Level", "Keyword Level"]:
         parts = []
         if lvl in sp_reports and not sp_reports[lvl].empty:
             parts.append(sp_reports[lvl])
@@ -327,7 +323,6 @@ def main():
         if parts:
             merged_levels[lvl] = pd.concat(parts, ignore_index=True)
 
-    # --- COMPUTE DEDUPLICATED OVERVIEW TOTALS ---
     sp_tot = get_authoritative_totals(sp_reports)
     sb_tot = get_authoritative_totals(sb_reports)
 
@@ -341,23 +336,20 @@ def main():
     comb_cvr = (comb_orders / comb_clicks * 100) if comb_clicks > 0 else 0.0
     comb_aov = comb_rev / comb_orders if comb_orders > 0 else 0.0
 
-    # --- HEADER & COMPACT 2-ROW OVERVIEW ---
     st.title("⚡ Zepto Ads Intelligence")
     active_modes = []
     if sp_reports:
         active_modes.append(f"Sponsored Products ({len(sp_reports)} levels)")
     if sb_reports:
         active_modes.append(f"Sponsored Brands ({len(sb_reports)} levels)")
-    st.caption(f"**Active Scope:** {' + '.join(active_modes)}  |  Deduplicated totals across Campaign, Product, Category & Keyword exports")
+    st.caption(f"**Active Scope:** {' + '.join(active_modes)}  |  Deduplicated totals across Campaign, City, Product, Category & Keyword exports")
 
-    # Row 1: Core Financial & Volume KPIs (Sales, Spends, Orders, Ad ROAS)
     r1c1, r1c2, r1c3, r1c4 = st.columns(4)
     r1c1.metric("Total Ad Sales", f"₹{comb_rev:,.2f}")
     r1c2.metric("Total Ad Spend", f"₹{comb_spend:,.2f}")
     r1c3.metric("Total Orders", f"{comb_orders:,}")
     r1c4.metric("Ad ROAS (Overall)", f"{comb_roas:.2f}x")
 
-    # Row 2: Efficiency & Funnel KPIs (ACOS, CVR, AOV, Clicks / Imps)
     r2c1, r2c2, r2c3, r2c4 = st.columns(4)
     r2c1.metric("Overall ACOS %", f"{comb_acos:.2f}%")
     r2c2.metric("Conversion Rate (CVR)", f"{comb_cvr:.2f}%")
@@ -366,7 +358,6 @@ def main():
 
     export_sheets = {}
 
-    # If BOTH SP and SB are uploaded, show a clean side-by-side channel split banner
     if sp_reports and sb_reports:
         st.markdown("##### 🔀 Channel Split: Sponsored Products (SP) vs. Sponsored Brands (SB)")
         split_df = pd.DataFrame([
@@ -407,8 +398,6 @@ def main():
     st.markdown("---")
 
     # --- BUILD GRANULAR DATAFRAMES ---
-
-    # 1. Campaign Level DF
     df_camp_view = pd.DataFrame()
     if "Campaign Level" in merged_levels:
         raw_c = merged_levels["Campaign Level"].copy()
@@ -427,7 +416,20 @@ def main():
         df_camp_view = compute_metrics(df_camp_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["Campaign_Performance"] = df_camp_view
 
-    # 2. Product Level DF
+    df_city_view = pd.DataFrame()
+    if "City Level" in merged_levels:
+        raw_city = merged_levels["City Level"].copy()
+        city_col = next((c for c in raw_city.columns if c.strip().lower() == "city"), "City")
+        agg_dict = {
+            "Campaign_name": "nunique", "Impressions": "sum", "Clicks": "sum",
+            "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
+            "Same_skus": "sum", "Other_skus": "sum"
+        }
+        agg_dict = {k: v for k, v in agg_dict.items() if k in raw_city.columns}
+        df_city_view = raw_city.groupby(["Ad Format", city_col], as_index=False).agg(agg_dict).rename(columns={"Campaign_name": "Campaigns", city_col: "City"})
+        df_city_view = compute_metrics(df_city_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
+        export_sheets["City_Performance"] = df_city_view
+
     df_prod_view = pd.DataFrame()
     if "Product Level" in merged_levels:
         raw_p = merged_levels["Product Level"].copy()
@@ -444,7 +446,6 @@ def main():
         df_prod_view = compute_metrics(df_prod_view).sort_values(by="Revenue", ascending=False).reset_index(drop=True)
         export_sheets["Product_Performance"] = df_prod_view
 
-    # 3. Category Level DF
     df_cat_view = pd.DataFrame()
     if "Category Level" in merged_levels:
         raw_cat = merged_levels["Category Level"].copy()
@@ -458,7 +459,6 @@ def main():
         df_cat_view = compute_metrics(df_cat_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["Category_Performance"] = df_cat_view
 
-    # 4. Keyword Level DF
     df_kw_view = pd.DataFrame()
     if "Keyword Level" in merged_levels:
         raw_kw = merged_levels["Keyword Level"].copy()
@@ -478,15 +478,14 @@ def main():
     # --- MULTI-TAB ANALYTICS ---
     tabs = st.tabs([
         "🎯 Campaign Level",
+        "🏙️ City Level",
         "📦 Product (SKU) Level",
         "🗂️ Category Level",
         "🔑 Keyword Level",
         "💡 Actionable Insights & Waste"
     ])
 
-    # =========================================================================
-    # TAB 1: CAMPAIGN LEVEL (WITH CLICK-TO-DRILLDOWN INTO PRODUCTS & KEYWORDS)
-    # =========================================================================
+    # TAB 1: CAMPAIGN LEVEL
     with tabs[0]:
         st.subheader("🎯 Campaign-Wise Performance")
         if not df_camp_view.empty:
@@ -502,77 +501,32 @@ def main():
             if camp_search:
                 disp_camp = disp_camp[disp_camp["CampaignName"].str.contains(camp_search, case=False, na=False)]
 
-            # Campaign Type & Strategy Prefix Summary (AUCTION_UP_SELL vs PCA / SPA vs SPCT vs SPM vs SBV)
-            raw_camp_all = merged_levels["Campaign Level"]
-            grp_strat = ["Ad Format"]
-            if "CampaignType" in raw_camp_all.columns:
-                grp_strat.append("CampaignType")
-            if "Strategy Tag" in raw_camp_all.columns:
-                grp_strat.append("Strategy Tag")
-
-            strat_df = raw_camp_all.groupby(grp_strat, as_index=False).agg({
-                "CampaignName": "nunique", "Impressions": "sum", "Clicks": "sum",
-                "Spend": "sum", "Orders": "sum", "Revenue": "sum"
-            }).rename(columns={"CampaignName": "Campaigns"})
-            strat_df = compute_metrics(strat_df).sort_values(by="Spend", ascending=False)
-            with st.expander("📊 Campaign Format & Strategy Summary (AUCTION_UP_SELL / PCA / SPA / SPCT / SPM)", expanded=False):
-                st.dataframe(style_table(strat_df), use_container_width=True, hide_index=True)
-
-            st.caption("💡 Click any campaign row below to inspect its underlying Products, Categories, and Keywords.")
-            camp_sel = st.dataframe(
-                style_table(disp_camp),
-                use_container_width=True,
-                hide_index=True,
-                on_select="rerun",
-                selection_mode="single-row",
-                key="zepto_camp_select"
-            )
-
-            sel_rows = camp_sel.selection.rows if camp_sel and camp_sel.selection else []
-            if sel_rows:
-                chosen_camp = disp_camp.iloc[sel_rows[0]]["CampaignName"]
-                chosen_fmt = disp_camp.iloc[sel_rows[0]]["Ad Format"]
-                st.markdown(f"#### 🔎 Drill-Down: `{chosen_camp}` ({chosen_fmt})")
-
-                if "Product Level" in merged_levels:
-                    sub_p = merged_levels["Product Level"][
-                        (merged_levels["Product Level"]["Campaign_name"] == chosen_camp) &
-                        (merged_levels["Product Level"]["Ad Format"] == chosen_fmt)
-                    ].copy()
-                    if not sub_p.empty:
-                        sub_p = compute_metrics(sub_p).sort_values(by="Spend", ascending=False)
-                        keep_p = [c for c in ["ProductName", "Category", "Impressions", "Clicks", "CTR %", "Atc", "Spend", "Orders", "Revenue", "CPC", "ROAS", "CVR %"] if c in sub_p.columns]
-                        with st.expander(f"📦 Products in this Campaign ({len(sub_p)})", expanded=True):
-                            st.dataframe(style_table(sub_p[keep_p]), use_container_width=True, hide_index=True)
-
-                if "Category Level" in merged_levels:
-                    sub_cat = merged_levels["Category Level"][
-                        (merged_levels["Category Level"]["Campaign_name"] == chosen_camp) &
-                        (merged_levels["Category Level"]["Ad Format"] == chosen_fmt)
-                    ].copy()
-                    if not sub_cat.empty:
-                        sub_cat = compute_metrics(sub_cat).sort_values(by="Spend", ascending=False)
-                        keep_cat = [c for c in ["Category", "Impressions", "Clicks", "CTR %", "Atc", "Spend", "Orders", "Revenue", "CPC", "ROAS", "CVR %"] if c in sub_cat.columns]
-                        with st.expander(f"🗂️ Categories in this Campaign ({len(sub_cat)})", expanded=True):
-                            st.dataframe(style_table(sub_cat[keep_cat]), use_container_width=True, hide_index=True)
-
-                if "Keyword Level" in merged_levels:
-                    sub_k = merged_levels["Keyword Level"][
-                        (merged_levels["Keyword Level"]["Campaign_name"] == chosen_camp) &
-                        (merged_levels["Keyword Level"]["Ad Format"] == chosen_fmt)
-                    ].copy()
-                    if not sub_k.empty:
-                        sub_k = compute_metrics(sub_k).sort_values(by="Spend", ascending=False)
-                        keep_k = [c for c in ["KeywordName", "KeywordMatchType", "Impressions", "Clicks", "CTR %", "Atc", "Spend", "Orders", "Revenue", "CPC", "ROAS", "CVR %"] if c in sub_k.columns]
-                        with st.expander(f"🔑 Keywords in this Campaign ({len(sub_k)})", expanded=True):
-                            st.dataframe(style_table(sub_k[keep_k]), use_container_width=True, hide_index=True)
+            st.dataframe(style_table(disp_camp), use_container_width=True, hide_index=True)
         else:
             st.info("Upload a **Campaign Level** report to view campaign-wise breakdown.")
 
-    # =========================================================================
-    # TAB 2: PRODUCT (SKU) LEVEL
-    # =========================================================================
+    # TAB 2: CITY LEVEL
     with tabs[1]:
+        st.subheader("🏙️ City-Wise Performance")
+        if not df_city_view.empty:
+            city_fmt = st.radio("Ad Format", ["All", "Sponsored Products", "Sponsored Brands"], horizontal=True, key="city_fmt")
+            disp_city = df_city_view.copy()
+            if city_fmt != "All":
+                disp_city = disp_city[disp_city["Ad Format"] == city_fmt]
+
+            st.dataframe(style_table(disp_city), use_container_width=True, hide_index=True)
+            col_ci1, col_ci2 = st.columns(2)
+            with col_ci1:
+                st.markdown("##### Spend by City")
+                st.bar_chart(disp_city.groupby("City")["Spend"].sum())
+            with col_ci2:
+                st.markdown("##### Revenue by City")
+                st.bar_chart(disp_city.groupby("City")["Revenue"].sum())
+        else:
+            st.info("Upload a **City Level** report to view geo-performance breakdown across cities.")
+
+    # TAB 3: PRODUCT LEVEL
+    with tabs[2]:
         st.subheader("📦 Product (SKU) Performance & Halo Effect")
         if not df_prod_view.empty:
             p_f1, p_f2 = st.columns([1.2, 2])
@@ -589,15 +543,12 @@ def main():
                     disp_prod["ProductName"].str.contains(p_search, case=False, na=False) |
                     disp_prod.get("Category", pd.Series("", index=disp_prod.index)).str.contains(p_search, case=False, na=False)
                 ]
-            st.caption("ℹ️ **Halo Share %** shows the percentage of orders coming from *Other SKUs* in your catalog after clicking this product's ad.")
             st.dataframe(style_table(disp_prod), use_container_width=True, hide_index=True)
         else:
-            st.info("Upload a **Product Level** report to view SKU performance and Same-SKU vs. Halo-SKU split.")
+            st.info("Upload a **Product Level** report to view SKU performance.")
 
-    # =========================================================================
-    # TAB 3: CATEGORY LEVEL
-    # =========================================================================
-    with tabs[2]:
+    # TAB 4: CATEGORY LEVEL
+    with tabs[3]:
         st.subheader("🗂️ Category-Wise Performance")
         if not df_cat_view.empty:
             cat_fmt = st.radio("Ad Format", ["All", "Sponsored Products", "Sponsored Brands"], horizontal=True, key="cat_fmt")
@@ -606,20 +557,11 @@ def main():
                 disp_cat = disp_cat[disp_cat["Ad Format"] == cat_fmt]
 
             st.dataframe(style_table(disp_cat), use_container_width=True, hide_index=True)
-            col_c1, col_c2 = st.columns(2)
-            with col_c1:
-                st.markdown("##### Spend by Category")
-                st.bar_chart(disp_cat.groupby("Category")["Spend"].sum())
-            with col_c2:
-                st.markdown("##### Revenue by Category")
-                st.bar_chart(disp_cat.groupby("Category")["Revenue"].sum())
         else:
-            st.info("Upload a **Category Level** report to view category-level spend, orders, and ROAS.")
+            st.info("Upload a **Category Level** report to view category-level spend and ROAS.")
 
-    # =========================================================================
-    # TAB 4: KEYWORD LEVEL
-    # =========================================================================
-    with tabs[3]:
+    # TAB 5: KEYWORD LEVEL
+    with tabs[4]:
         st.subheader("🔑 Keyword-Wise Performance")
         if not df_kw_view.empty:
             k_f1, k_f2, k_f3 = st.columns([1.3, 1.7, 1])
@@ -639,56 +581,31 @@ def main():
             if match_sel != "All" and "Match Type" in disp_kw.columns:
                 disp_kw = disp_kw[disp_kw["Match Type"] == match_sel]
 
-            # Match Type summary
-            if "Match Type" in df_kw_view.columns:
-                mt_agg = merged_levels["Keyword Level"].groupby(["Ad Format", "KeywordMatchType"], as_index=False).agg({
-                    "KeywordName": "nunique", "Impressions": "sum", "Clicks": "sum",
-                    "Spend": "sum", "Orders": "sum", "Revenue": "sum"
-                }).rename(columns={"KeywordMatchType": "Match Type", "KeywordName": "Unique Keywords"})
-                mt_agg = compute_metrics(mt_agg).sort_values(by="Spend", ascending=False)
-                with st.expander("📊 Match Type Efficiency Summary (EXACT vs. PHRASE vs. BROAD)", expanded=True):
-                    st.dataframe(style_table(mt_agg), use_container_width=True, hide_index=True)
-
             st.dataframe(style_table(disp_kw), use_container_width=True, hide_index=True)
         else:
-            st.info("Upload a **Keyword Level** report to view keyword & match-type performance.")
+            st.info("Upload a **Keyword Level** report to view keyword performance.")
 
-    # =========================================================================
-    # TAB 5: ACTIONABLE INSIGHTS & WASTE DETECTOR
-    # =========================================================================
-    with tabs[4]:
+    # TAB 6: ACTIONABLE INSIGHTS & WASTE DETECTOR
+    with tabs[5]:
         st.subheader("💡 Automated Optimization Insights")
 
-        # 1. Zero-Order Wasted Spend Keywords
         if not df_kw_view.empty:
             waste_kw = df_kw_view[(df_kw_view["Orders"] == 0) & (df_kw_view["Spend"] >= waste_spend_min)].sort_values(by="Spend", ascending=False)
             st.markdown(f"#### 🛑 High-Spend Zero-Order Keywords (Spend ≥ ₹{waste_spend_min:,}) — `{len(waste_kw)} found`")
             if not waste_kw.empty:
-                st.caption("Consider adding these as negative keywords or pausing bids to stop budget leakage.")
                 st.dataframe(style_table(waste_kw), use_container_width=True, hide_index=True)
                 export_sheets["Wasted_Keywords"] = waste_kw
             else:
                 st.success("No keywords exceeded your zero-order spend threshold.")
 
-        # 2. High-ROAS Scale Winners
         if not df_kw_view.empty:
             scale_kw = df_kw_view[(df_kw_view["ROAS"] >= target_roas) & (df_kw_view["Orders"] >= 3)].sort_values(by="Revenue", ascending=False)
             st.markdown(f"#### 🚀 Scale Winners (ROAS ≥ {target_roas:.1f}x & Orders ≥ 3) — `{len(scale_kw)} found`")
             if not scale_kw.empty:
-                st.caption("Top converting keywords outperforming your target ROAS — prioritize Exact match & higher bid caps.")
                 st.dataframe(style_table(scale_kw), use_container_width=True, hide_index=True)
                 export_sheets["Scale_Winners"] = scale_kw
 
-        # 3. High-ATC / Low-CVR Friction SKUs
-        if not df_prod_view.empty and "Atc" in df_prod_view.columns:
-            friction_skus = df_prod_view[(df_prod_view["Atc"] >= 15) & (df_prod_view["CVR %"] < 5.0)].sort_values(by="Atc", ascending=False)
-            st.markdown(f"#### ⚠️ High Add-to-Cart but Low Conversion SKUs — `{len(friction_skus)} found`")
-            if not friction_skus.empty:
-                st.caption("Shoppers are adding these products to cart but dropping off before checkout — check dark-store stockouts, pricing, or delivery fee thresholds.")
-                st.dataframe(style_table(friction_skus), use_container_width=True, hide_index=True)
-                export_sheets["Cart_Dropoff_SKUs"] = friction_skus
-
-    # --- MASTER EXCEL DOWNLOAD ---
+    # MASTER EXCEL DOWNLOAD
     st.markdown("---")
     if export_sheets:
         excel_bytes = export_excel_workbook(export_sheets)
