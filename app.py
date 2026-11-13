@@ -1,6 +1,6 @@
 """
-Zepto Ads Intelligence 
------------------------------------------------------------------------------------
+Zepto Ads Intelligence (Sponsored Products + Sponsored Brands)
+--------------------------------------------------------------
 Auto-identifies Campaign, Product, Category, and Keyword level Zepto reports upon upload
 for both Sponsored Products (SP) and Sponsored Brands (SB - PCA/SBV), computes combined &
 channel-level KPIs without double-counting, and generates actionable insights.
@@ -12,7 +12,7 @@ import streamlit as st
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
-    page_title="Zepto Ads Performance Analyzer",
+    page_title="Zepto Ads Intelligence",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -71,7 +71,7 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [c.strip() for c in df.columns]
 
-    # Note: Sponsored Brands files omit 'Cpc' column natively; handled dynamically via Spend/Clicks
+    # Sponsored Brands files omit 'Cpc' column natively; handled dynamically via Spend/Clicks
     num_candidates = [
         "Atc", "Clicks", "Cpc", "Cpm", "Ctr", "Daily_budget",
         "Impressions", "New_to_brand_user_percentage", "Orders",
@@ -261,7 +261,7 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
 
 def main():
     with st.sidebar:
-        st.title("⚡ Zepto Ads Analyzer")
+        st.title("⚡ Zepto Ads Intelligence")
         st.caption("Sponsored Products & Sponsored Brands Intelligence")
         st.markdown("---")
 
@@ -300,7 +300,7 @@ def main():
                 st.markdown(f"<span class='badge-sb'>SB</span> <b>{lvl}</b> — <small>{fname} ({rows} rows)</small>", unsafe_allow_html=True)
 
     if not sp_reports and not sb_reports:
-        st.title("⚡ Zepto Ads Intelligence & Performance Analyzer")
+        st.title("⚡ Zepto Ads Intelligence")
         st.info("👈 Upload one or more **Sponsored Products (SP)** or **Sponsored Brands (SB)** Excel/CSV reports in the sidebar to begin. The app automatically detects Campaign, Product, Category, and Keyword files.")
         return
 
@@ -342,7 +342,7 @@ def main():
     comb_aov = comb_rev / comb_orders if comb_orders > 0 else 0.0
 
     # --- HEADER & COMPACT 2-ROW OVERVIEW ---
-    st.title("⚡ Zepto Ads Performance Overview")
+    st.title("⚡ Zepto Ads Intelligence")
     active_modes = []
     if sp_reports:
         active_modes.append(f"Sponsored Products ({len(sp_reports)} levels)")
