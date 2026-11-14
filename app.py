@@ -293,7 +293,7 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
             
             level = identify_zepto_report(df_raw)
             
-            # 1. Cleaned version (metrics converted from text to numeric)
+            # 1. Cleaned version
             df_cleaned_raw = clean_numeric_cols(df_raw)
             df_cleaned_raw["Ad Format"] = ad_format_label
 
@@ -309,10 +309,11 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
                 "df": df_cleaned_raw
             })
 
-            # 2. Original format version (exact original columns and rows, but metrics stored as text converted to proper numerical values)
+            # 2. Original format version (properly named like SP_Campaign.xlsx, SB_Keyword.xlsx with metrics as values)
             df_orig_numeric = clean_numeric_cols(df_raw)
+            orig_filename = f"{prefix}_{level_code}.xlsx"
             original_raw_records.append({
-                "filename": f"{prefix}_{level_code}_Original_Format_{f.name}",
+                "filename": orig_filename,
                 "original_name": f.name,
                 "level": level,
                 "ad_format": ad_format_label,
@@ -599,7 +600,7 @@ def main():
         df_kw_view = compute_metrics(df_kw_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["Keyword_Performance"] = df_kw_view
 
-    # --- MULTI-TAB ANALYTICS (INCLUDING BOTH RAW DOWNLOAD TABS) ---
+    # --- MULTI-TAB ANALYTICS (9 TABS INCLUDING DEDICATED SEPARATE DOWNLOADS) ---
     tabs = st.tabs([
         "🎯 Campaign Level",
         "🏷️ Campaign Type Level",
@@ -738,10 +739,10 @@ def main():
                 st.dataframe(style_table(scale_kw), use_container_width=True, hide_index=True)
                 export_sheets["Scale_Winners"] = scale_kw
 
-    # TAB 8: STANDARD RAW DOWNLOAD
+    # TAB 8: STANDARD RAW FILES DOWNLOAD
     with tabs[7]:
-        st.subheader("📥 Download Standardized Cleaned Raw Reports")
-        st.caption("Download each uploaded raw report separately with standardized filenames (e.g., SP_Campaign_Report.xlsx, SB_Keyword_Report.xlsx) and numeric metrics fully cleaned.")
+        st.subheader("📥 Standardized Cleaned Raw Reports Download")
+        st.caption("Download each uploaded raw report separately with standardized filenames and numeric metrics fully cleaned.")
         
         if all_raw_records:
             col_d1, col_d2 = st.columns(2)
@@ -761,10 +762,10 @@ def main():
         else:
             st.info("No raw files uploaded yet.")
 
-    # TAB 9: ORIGINAL FORMAT RAW DOWNLOAD (NEW ADDITIONAL TAB)
+    # TAB 9: ORIGINAL FORMAT RAW FILES DOWNLOAD (PROPERLY NAMED LIKE SP_Campaign.xlsx, SB_Keyword.xlsx)
     with tabs[8]:
-        st.subheader("📥 Download Original Format Raw Reports (Metrics Converted to Values)")
-        st.caption("Download all uploaded raw files in their exact original row and column structure, with any text-stored metrics properly converted to numerical values.")
+        st.subheader("📥 Original Format Raw Files Download (Properly Named with Metrics as Values)")
+        st.caption("Download each uploaded raw file in its exact original structure, properly named (e.g., SP_Campaign.xlsx, SB_Keyword.xlsx), with all text-stored numbers converted to proper numerical values.")
         
         if all_orig_records:
             col_o1, col_o2 = st.columns(2)
@@ -773,11 +774,11 @@ def main():
                 with target_col:
                     file_bytes = export_single_file_excel(rec["df"])
                     badge_color = "badge-sp" if rec["ad_format"] == "Sponsored Products" else "badge-sb"
-                    st.markdown(f"<span class='{badge_color}'>{rec['ad_format']}</span> <b>{rec['level']}</b> — <small>{rec['original_name']}</small>", unsafe_allow_html=True)
+                    st.markdown(f"<span class='{badge_color}'>{rec['ad_format']}</span> <b>{rec['level']}</b> — <small>Original: {rec['original_name']}</small>", unsafe_allow_html=True)
                     st.download_button(
                         label=f"⬇️ Download {rec['filename']}",
                         data=file_bytes,
-                        file_name=rec['filename'],
+                        file_name=rec["filename"],
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key=f"dl_orig_{idx}"
                     )
