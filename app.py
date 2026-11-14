@@ -896,7 +896,42 @@ def main():
             st.dataframe(style_table(zero_df), use_container_width=True, hide_index=True)
             export_sheets["Zero_Sale_Summary"] = zero_df
 
-        # 5. Concentration + weakest category, as one-line takeaways
+        # 5. EXACT harvest candidates: strong PHRASE keywords with no EXACT row anywhere
+        if not df_kw_view.empty and "Match Type" in df_kw_view.columns:
+            _exact_kws = set(df_kw_view.loc[df_kw_view["Match Type"] == "EXACT", "KeywordName"])
+            _ph = df_kw_view[df_kw_view["Match Type"] == "PHRASE"]
+            _agg = {k: "sum" for k in ["Impressions", "Clicks", "Atc", "Spend", "Orders", "Revenue", "Same_skus", "Other_skus"] if k in _ph.columns}
+            _harv = _ph.groupby("KeywordName", as_index=False).agg(_agg)
+            _harv = compute_metrics(_harv)
+            _harv = _harv[(_harv["Clicks"] >= 100) & (_harv["CTR %"] >= 6)
+                          & (_harv["CVR %"] >= 12) & (_harv["ROAS"] >= 10)]
+            _harv = _harv[~_harv["KeywordName"].isin(_exact_kws)].sort_values(by="Revenue", ascending=False).reset_index(drop=True)
+            st.markdown("##### 🌱 Harvest — PHRASE keywords worth testing as EXACT")
+            if not _harv.empty:
+                st.caption("PHRASE only, grouped across campaigns: Clicks ≥ 100, CTR ≥ 6%, CVR ≥ 12%, ROAS ≥ 10x, and no EXACT row for the keyword anywhere.")
+                _harv_cols = [c for c in ["KeywordName", "Impressions", "Clicks", "CTR %", "CVR %", "Spend", "Orders", "Revenue", "ROAS"] if c in _harv.columns]
+                st.dataframe(style_table(_harv[_harv_cols]), use_container_width=True, hide_index=True)
+                export_sheets["Harvest_Candidates"] = _harv[_harv_cols]
+            else:
+                st.success("No PHRASE keyword meets the harvest thresholds right now.")
+
+        # 6. High-CPC, low-ROAS keyword rows (per keyword per campaign, raw keyword level)
+        if "Keyword Level" in merged_levels:
+            _raw_kw = merged_levels["Keyword Level"].copy()
+            _agg2 = {k: "sum" for k in ["Impressions", "Clicks", "Atc", "Spend", "Orders", "Revenue", "Same_skus", "Other_skus"] if k in _raw_kw.columns}
+            _kw_cpc = _raw_kw.groupby(["KeywordName", "KeywordMatchType", "Campaign_name"], as_index=False).agg(_agg2)
+            _kw_cpc = compute_metrics(_kw_cpc)
+            _kw_cpc = _kw_cpc[(_kw_cpc["Clicks"] >= 20) & (_kw_cpc["CPC"] >= 25) & (_kw_cpc["ROAS"] < target_roas)].sort_values(by="Spend", ascending=False).reset_index(drop=True)
+            st.markdown(f"##### 💸 High-CPC, Low-ROAS Keywords (CPC ≥ ₹25, ROAS below {target_roas:.1f}x)")
+            if not _kw_cpc.empty:
+                st.caption("Per keyword per campaign, Clicks ≥ 20 so 1-click rows don't look like CPC outliers.")
+                _cpc_cols = [c for c in ["KeywordName", "KeywordMatchType", "Campaign_name", "Clicks", "CPC", "Spend", "Orders", "Revenue", "ROAS"] if c in _kw_cpc.columns]
+                st.dataframe(style_table(_kw_cpc[_cpc_cols]), use_container_width=True, hide_index=True)
+                export_sheets["CPC_Outliers"] = _kw_cpc[_cpc_cols]
+            else:
+                st.success("No keyword row meets the high-CPC, low-ROAS rule right now.")
+
+        # 7. Concentration + weakest category, as one-line takeaways
         if not df_camp_view.empty and "Spend" in df_camp_view.columns and df_camp_view["Spend"].sum() > 0:
             _top3 = df_camp_view.sort_values(by="Spend", ascending=False).head(3)
             _share = _top3["Spend"].sum() / df_camp_view["Spend"].sum() * 100
