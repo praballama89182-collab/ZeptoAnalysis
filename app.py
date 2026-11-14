@@ -9,6 +9,8 @@ channel-level KPIs without double-counting, and generates actionable insights.
 import io
 import pandas as pd
 import streamlit as st
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+from openpyxl.utils import get_column_letter
 
 # --- PAGE CONFIGURATION ---
 st.set_page_config(
@@ -32,6 +34,7 @@ st.markdown("""
     h1, h2, h3 { color: #1e293b; font-family: 'Inter', 'Helvetica Neue', sans-serif; }
     [data-testid="stDataFrame"] th, [data-testid="stDataFrame"] td {
         text-align: center !important;
+        vertical-align: middle !important;
     }
     .badge-sp {
         background-color: #ede9fe; color: #5b21b6; padding: 2px 7px;
@@ -43,6 +46,17 @@ st.markdown("""
     }
     </style>
     """, unsafe_allow_html=True)
+
+
+# --- NUMBER FORMATTING HELPERS ---
+
+def format_smart_number(val):
+    """Formats whole numbers without decimals and decimals to max 2 decimal places."""
+    if pd.isna(val) or not isinstance(val, (int, float)):
+        return val
+    if float(val).is_integer():
+        return f"{int(round(val)):,}"
+    return f"{val:,.2f}"
 
 
 # --- FILE DETECTION & SCHEMA NORMALIZATION ---
@@ -57,7 +71,7 @@ def identify_zepto_report(df: pd.DataFrame) -> str:
         return "Keyword Level"
     if "category" in cols and "productid" not in cols:
         return "Category Level"
-    if "campaignname" in cols or "campaigntype" in cols or "daily_budget" in cols:
+    if "campaignname" in cols or "campaigntype" in cols or "daily_budget" in cols or "campaign_name" in cols:
         return "Campaign Level"
     return "Unknown Report"
 
@@ -133,16 +147,23 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def style_table(df: pd.DataFrame, row_styler=None):
-    dec_cols = [
-        "Spend", "Revenue", "ROAS", "Robas", "ACOS %", "CTR %",
-        "CPC", "CPM", "ATC Rate %", "CVR %", "AOV", "Halo Share %",
-        "Daily_budget", "Spend Share %", "Sales Share %"
-    ]
-    fmt = {c: "{:.2f}" for c in dec_cols if c in df.columns}
-    styler = df.style.set_properties(**{"text-align": "center"}).set_table_styles([
-        {"selector": "th", "props": [("text-align", "center")]},
-        {"selector": "td", "props": [("text-align", "center")]}
+    """Center/middle aligns all cells and strips decimals on whole numbers while keeping max 2 decimals."""
+    num_cols = df.select_dtypes(include=["number"]).columns.tolist()
+    fmt = {c: format_smart_number for c in num_cols}
+
+    styler = df.style.set_properties(**{
+        "text-align": "center",
+        "vertical-align": "middle"
+    }).set_table_styles([
+        {"selector": "th", "props": [("text-align", "center"), ("vertical-align", "middle")]},
+        {"selector": "td", "props": [("text-align", "center"), ("vertical-align", "middle")]}
     ])
+
+    # Left-align first column in UI for clean hierarchy while keeping metrics middle-aligned
+    if len(df.columns) > 0:
+        first_col = df.columns[0]
+        styler = styler.set_properties(subset=[first_col], **{"text-align": "left", "vertical-align": "middle"})
+
     if row_styler is not None:
         styler = styler.apply(row_styler, axis=1)
     if fmt:
@@ -168,11 +189,98 @@ def get_authoritative_totals(channel_reports: dict) -> dict:
 
 
 def export_excel_workbook(sheets_dict: dict) -> bytes:
+    """
+    Exports styled Excel workbook:
+    - Dark blue header fill (#1B365D) with bold white text
+    - Thin borders on all cells
+    - First column left-aligned & middle-aligned; all metric/other columns center & middle-aligned
+    - Smart number format: whole numbers shown without decimals, decimals rounded to 2 places
+    - Auto-adjusted column widths and frozen header row
+    """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        header_fill = PatternFill(start_color="1B365D", end_color="1B365D", fill_type="solid")
+        zebra_fill = PatternFill(start_color="F4F7FA", end_color="F4F7FA", fill_type="solid")
+        header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        body_font = Font(name="Calibri", size=10, bold=False, color="1E293B")
+
+        thin_side = Side(style="thin", color="CBD5E1")
+        cell_border = Border(left=thin_side, right=thin_side, top=thin_side, bottom=thin_side)
+
+        header_align = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        first_col_align = Alignment(horizontal="left", vertical="center", wrap_text=False)
+        metric_align = Alignment(horizontal="center", vertical="center", wrap_text=False)
+
         for name, df in sheets_dict.items():
-            if df is not None and not df.empty:
-                df.to_excel(writer, sheet_name=name[:31], index=False)
+            if df is None or df.empty:
+                continue
+
+            sheet_name = name[:31]
+            df_export = df.copy()
+
+            # Convert whole-number floats to clean int in export dataframe so Excel stores/displays cleanly
+            for col in df_export.select_dtypes(include=["float", "int"]).columns:
+                df_export[col] = df_export[col].apply(
+                    lambda x: int(round(x)) if pd.notna(x) and float(x).is_integer() else (round(float(x), 2) if pd.notna(x) else x)
+                )
+
+            df_export.to_excel(writer, sheet_name=sheet_name, index=False)
+            ws = writer.sheets[sheet_name]
+
+            # Freeze header row and enable filter
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = ws.dimensions
+            ws.row_dimensions[1].height = 28
+
+            max_row = ws.max_row
+            max_col = ws.max_column
+
+            # Style Header Row
+            for col_idx in range(1, max_col + 1):
+                cell = ws.cell(row=1, column=col_idx)
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = header_align
+                cell.border = cell_border
+
+            # Style Data Rows
+            for row_idx in range(2, max_row + 1):
+                ws.row_dimensions[row_idx].height = 21
+                is_even = (row_idx % 2 == 0)
+                for col_idx in range(1, max_col + 1):
+                    cell = ws.cell(row=row_idx, column=col_idx)
+                    cell.font = body_font
+                    cell.border = cell_border
+                    if is_even:
+                        cell.fill = zebra_fill
+
+                    # First column left-aligned & middle-aligned; all other columns center & middle-aligned
+                    if col_idx == 1:
+                        cell.alignment = first_col_align
+                    else:
+                        cell.alignment = metric_align
+
+                    # Number formatting: whole numbers without decimals, decimals with 2 decimal places
+                    val = cell.value
+                    if isinstance(val, int) and not isinstance(val, bool):
+                        cell.number_format = "#,##0"
+                    elif isinstance(val, float):
+                        if val.is_integer():
+                            cell.value = int(round(val))
+                            cell.number_format = "#,##0"
+                        else:
+                            cell.number_format = "#,##0.00"
+
+            # Auto-fit column widths with generous padding
+            for col_idx in range(1, max_col + 1):
+                col_letter = get_column_letter(col_idx)
+                max_len = 0
+                for row_idx in range(1, max_row + 1):
+                    val = ws.cell(row=row_idx, column=col_idx).value
+                    if val is not None:
+                        max_len = max(max_len, len(str(val)))
+                ws.column_dimensions[col_letter].width = min(max(max_len + 5, 13), 48)
+
     return output.getvalue()
 
 
@@ -223,7 +331,25 @@ def main():
         )
 
         st.markdown("---")
-        st.subheader("3. Optimization Thresholds")
+        st.subheader("3. Consolidated Raw Settings")
+        use_date_filter = st.checkbox("Add Duration Date / Range (2026)", value=False)
+        duration_val = ""
+        if use_date_filter:
+            date_selection = st.date_input(
+                "Select Date or Date Range (2026)",
+                value=(pd.to_datetime("2026-01-01").date(), pd.to_datetime("2026-01-31").date()),
+                min_value=pd.to_datetime("2026-01-01").date(),
+                max_value=pd.to_datetime("2026-12-31").date(),
+                key="duration_date_input"
+            )
+            if isinstance(date_selection, tuple) and len(date_selection) == 2:
+                start_d, end_d = date_selection
+                duration_val = f"{start_d} to {end_d}" if start_d != end_d else str(start_d)
+            elif date_selection:
+                duration_val = str(date_selection)
+
+        st.markdown("---")
+        st.subheader("4. Optimization Thresholds")
         target_roas = st.number_input("Target ROAS Benchmark", min_value=1.0, max_value=50.0, value=8.0, step=0.5)
         waste_spend_min = st.number_input("Zero-Order Waste Alert (₹)", min_value=100, max_value=20000, value=1000, step=250)
 
@@ -285,18 +411,33 @@ def main():
         active_modes.append(f"Sponsored Brands ({len(sb_reports)} levels)")
     st.caption(f"**Active Scope:** {' + '.join(active_modes)}  |  Deduplicated totals across Campaign, City, Product, Category & Keyword exports")
 
-    # --- TOP 6 KEY METRICS (2 ROWS OF 3 FOR MAXIMUM READABILITY) ---
+    # --- TOP 6 KEY METRICS (2 ROWS OF 3 FOR MAXIMUM READABILITY, SMART DECIMALS) ---
     m1, m2, m3 = st.columns(3)
-    m1.metric("Total Ad Sales", f"₹{comb_rev:,.2f}")
-    m2.metric("Total Ad Spend", f"₹{comb_spend:,.2f}")
-    m3.metric("Ad ROAS", f"{comb_roas:.2f}x")
+    m1.metric("Total Ad Sales", f"₹{format_smart_number(comb_rev)}")
+    m2.metric("Total Ad Spend", f"₹{format_smart_number(comb_spend)}")
+    m3.metric("Ad ROAS", f"{format_smart_number(comb_roas)}x")
 
     m4, m5, m6 = st.columns(3)
     m4.metric("Total Orders", f"{comb_orders:,}")
-    m5.metric("Conversion Rate (CVR)", f"{comb_cvr:.2f}%")
-    m6.metric("Average Order Value (AOV)", f"₹{comb_aov:,.2f}")
+    m5.metric("Conversion Rate (CVR)", f"{format_smart_number(comb_cvr)}%")
+    m6.metric("Average Order Value (AOV)", f"₹{format_smart_number(comb_aov)}")
 
     export_sheets = {}
+
+    # --- CONSOLIDATED RAW ACCUMULATION ---
+    consolidated_raw_parts = []
+    for f_dict, format_label in [(sp_reports, "Sponsored Products"), (sb_reports, "Sponsored Brands")]:
+        for level, df in f_dict.items():
+            if df is not None and not df.empty:
+                tmp = df.copy()
+                tmp["Ad Format"] = format_label
+                tmp["Report Level"] = level
+                consolidated_raw_parts.append(tmp)
+
+    if consolidated_raw_parts:
+        consolidated_raw_df = pd.concat(consolidated_raw_parts, ignore_index=True)
+        consolidated_raw_df.insert(0, "Duration", duration_val)
+        export_sheets["Consolidated_Raw"] = consolidated_raw_df
 
     if sp_reports and sb_reports:
         st.markdown("##### 🔀 Channel Split: Sponsored Products (SP) vs. Sponsored Brands (SB)")
@@ -341,7 +482,7 @@ def main():
     df_camp_view = pd.DataFrame()
     if "Campaign Level" in merged_levels:
         raw_c = merged_levels["Campaign Level"].copy()
-        grp_cols = ["Ad Format", "CampaignName"]
+        grp_cols = ["CampaignName", "Ad Format"]
         if "CampaignType" in raw_c.columns:
             grp_cols.append("CampaignType")
         if "Status" in raw_c.columns:
@@ -366,14 +507,14 @@ def main():
             "Same_skus": "sum", "Other_skus": "sum"
         }
         agg_dict = {k: v for k, v in agg_dict.items() if k in raw_city.columns}
-        df_city_view = raw_city.groupby(["Ad Format", city_col], as_index=False).agg(agg_dict).rename(columns={city_col: "City"})
+        df_city_view = raw_city.groupby([city_col, "Ad Format"], as_index=False).agg(agg_dict).rename(columns={city_col: "City"})
         df_city_view = compute_metrics(df_city_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["City_Performance"] = df_city_view
 
     df_prod_view = pd.DataFrame()
     if "Product Level" in merged_levels:
         raw_p = merged_levels["Product Level"].copy()
-        grp_cols = ["Ad Format", "ProductName"]
+        grp_cols = ["ProductName", "Ad Format"]
         if "Category" in raw_p.columns:
             grp_cols.append("Category")
         agg_dict = {
@@ -395,14 +536,14 @@ def main():
             "Same_skus": "sum", "Other_skus": "sum"
         }
         agg_dict = {k: v for k, v in agg_dict.items() if k in raw_cat.columns}
-        df_cat_view = raw_cat.groupby(["Ad Format", "Category"], as_index=False).agg(agg_dict).rename(columns={"Campaign_name": "Campaigns"})
+        df_cat_view = raw_cat.groupby(["Category", "Ad Format"], as_index=False).agg(agg_dict).rename(columns={"Campaign_name": "Campaigns"})
         df_cat_view = compute_metrics(df_cat_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["Category_Performance"] = df_cat_view
 
     df_kw_view = pd.DataFrame()
     if "Keyword Level" in merged_levels:
         raw_kw = merged_levels["Keyword Level"].copy()
-        grp_cols = ["Ad Format", "KeywordName"]
+        grp_cols = ["KeywordName", "Ad Format"]
         if "KeywordMatchType" in raw_kw.columns:
             grp_cols.append("KeywordMatchType")
         agg_dict = {
