@@ -88,7 +88,6 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
     ]
     for col in num_candidates:
         if col in df.columns:
-            # Robust conversion handling values stored as text (with commas/symbols)
             s_col = df[col].astype(str).str.replace(",", "", regex=True)
             df[col] = pd.to_numeric(s_col, errors="coerce").fillna(0.0)
 
@@ -291,8 +290,6 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
                 df_raw = pd.read_excel(f, engine="openpyxl")
             
             level = identify_zepto_report(df_raw)
-            
-            # Clean numeric cols while preserving original columns
             df_cleaned_raw = clean_numeric_cols(df_raw)
             df_cleaned_raw["Ad Format"] = ad_format_label
 
@@ -422,7 +419,7 @@ def main():
         active_modes.append(f"Sponsored Brands ({len(sb_reports)} levels)")
     st.caption(f"**Active Scope:** {' + '.join(active_modes)}  |  Deduplicated totals across Campaign, City, Product, Category & Keyword exports")
 
-    # --- TOP 6 KEY METRICS (2 ROWS OF 3 FOR MAXIMUM READABILITY, SMART DECIMALS) ---
+    # --- TOP 6 KEY METRICS ---
     m1, m2, m3 = st.columns(3)
     m1.metric("Total Ad Sales", f"₹{format_smart_number(comb_rev)}")
     m2.metric("Total Ad Spend", f"₹{format_smart_number(comb_spend)}")
@@ -502,6 +499,21 @@ def main():
         df_camp_view = compute_metrics(df_camp_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["Campaign_Performance"] = df_camp_view
 
+    # --- NEW: CAMPAIGN TYPE PERFORMANCE ---
+    df_camp_type_view = pd.DataFrame()
+    if "Campaign Level" in merged_levels and "CampaignType" in merged_levels["Campaign Level"].columns:
+        raw_ct = merged_levels["Campaign Level"].copy()
+        raw_ct["CampaignType"] = raw_ct["CampaignType"].fillna("Unassigned / Other")
+        agg_dict = {
+            "CampaignName": "nunique", "Impressions": "sum", "Clicks": "sum",
+            "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
+            "Same_skus": "sum", "Other_skus": "sum"
+        }
+        agg_dict = {k: v for k, v in agg_dict.items() if k in raw_ct.columns}
+        df_camp_type_view = raw_ct.groupby(["CampaignType", "Ad Format"], as_index=False).agg(agg_dict).rename(columns={"CampaignName": "Campaigns"})
+        df_camp_type_view = compute_metrics(df_camp_type_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
+        export_sheets["Campaign_Type_Performance"] = df_camp_type_view
+
     df_city_view = pd.DataFrame()
     if "City Level" in merged_levels:
         raw_city = merged_levels["City Level"].copy()
@@ -561,9 +573,10 @@ def main():
         df_kw_view = compute_metrics(df_kw_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["Keyword_Performance"] = df_kw_view
 
-    # --- MULTI-TAB ANALYTICS (INCLUDING NEW RAW FILES DOWNLOAD TAB) ---
+    # --- MULTI-TAB ANALYTICS (INCLUDING NEW CAMPAIGN TYPE TAB) ---
     tabs = st.tabs([
         "🎯 Campaign Level",
+        "🏷️ Campaign Type Level",
         "🏙️ City Level",
         "📦 Product (SKU) Level",
         "🗂️ Category Level",
@@ -592,8 +605,29 @@ def main():
         else:
             st.info("Upload a **Campaign Level** report to view campaign-wise breakdown.")
 
-    # TAB 2: CITY LEVEL
+    # TAB 2: CAMPAIGN TYPE LEVEL (NEW)
     with tabs[1]:
+        st.subheader("🏷️ Campaign Type Performance Breakdown")
+        if not df_camp_type_view.empty:
+            ct_fmt = st.radio("Ad Format", ["All", "Sponsored Products", "Sponsored Brands"], horizontal=True, key="ct_fmt")
+            disp_ct = df_camp_type_view.copy()
+            if ct_fmt != "All":
+                disp_ct = disp_ct[disp_ct["Ad Format"] == ct_fmt]
+
+            st.dataframe(style_table(disp_ct), use_container_width=True, hide_index=True)
+            
+            col_ct1, col_ct2 = st.columns(2)
+            with col_ct1:
+                st.markdown("##### Spend Share by Campaign Type")
+                st.bar_chart(disp_ct.groupby("CampaignType")["Spend"].sum())
+            with col_ct2:
+                st.markdown("##### Revenue Share by Campaign Type")
+                st.bar_chart(disp_ct.groupby("CampaignType")["Revenue"].sum())
+        else:
+            st.info("Upload a **Campaign Level** report containing `CampaignType` to view campaign type aggregation.")
+
+    # TAB 3: CITY LEVEL
+    with tabs[2]:
         st.subheader("🏙️ City-Wise Performance")
         if not df_city_view.empty:
             city_fmt = st.radio("Ad Format", ["All", "Sponsored Products", "Sponsored Brands"], horizontal=True, key="city_fmt")
@@ -602,18 +636,11 @@ def main():
                 disp_city = disp_city[disp_city["Ad Format"] == city_fmt]
 
             st.dataframe(style_table(disp_city), use_container_width=True, hide_index=True)
-            col_ci1, col_ci2 = st.columns(2)
-            with col_ci1:
-                st.markdown("##### Spend by City")
-                st.bar_chart(disp_city.groupby("City")["Spend"].sum())
-            with col_ci2:
-                st.markdown("##### Revenue by City")
-                st.bar_chart(disp_city.groupby("City")["Revenue"].sum())
         else:
-            st.info("Upload a **City Level** report (`CityName` or `City` column) to view geo-performance breakdown across cities.")
+            st.info("Upload a **City Level** report to view geo-performance breakdown.")
 
-    # TAB 3: PRODUCT LEVEL
-    with tabs[2]:
+    # TAB 4: PRODUCT LEVEL
+    with tabs[3]:
         st.subheader("📦 Product (SKU) Performance & Halo Effect")
         if not df_prod_view.empty:
             p_f1, p_f2 = st.columns([1.2, 2])
@@ -634,8 +661,8 @@ def main():
         else:
             st.info("Upload a **Product Level** report to view SKU performance.")
 
-    # TAB 4: CATEGORY LEVEL
-    with tabs[3]:
+    # TAB 5: CATEGORY LEVEL
+    with tabs[4]:
         st.subheader("🗂️ Category-Wise Performance")
         if not df_cat_view.empty:
             cat_fmt = st.radio("Ad Format", ["All", "Sponsored Products", "Sponsored Brands"], horizontal=True, key="cat_fmt")
@@ -647,8 +674,8 @@ def main():
         else:
             st.info("Upload a **Category Level** report to view category-level spend and ROAS.")
 
-    # TAB 5: KEYWORD LEVEL
-    with tabs[4]:
+    # TAB 6: KEYWORD LEVEL
+    with tabs[5]:
         st.subheader("🔑 Keyword-Wise Performance")
         if not df_kw_view.empty:
             k_f1, k_f2, k_f3 = st.columns([1.3, 1.7, 1])
@@ -672,8 +699,8 @@ def main():
         else:
             st.info("Upload a **Keyword Level** report to view keyword performance.")
 
-    # TAB 6: ACTIONABLE INSIGHTS & WASTE DETECTOR
-    with tabs[5]:
+    # TAB 7: ACTIONABLE INSIGHTS & WASTE DETECTOR
+    with tabs[6]:
         st.subheader("💡 Automated Optimization Insights")
 
         if not df_kw_view.empty:
@@ -692,10 +719,10 @@ def main():
                 st.dataframe(style_table(scale_kw), use_container_width=True, hide_index=True)
                 export_sheets["Scale_Winners"] = scale_kw
 
-    # TAB 7: INDIVIDUAL RAW FILES DOWNLOAD
-    with tabs[6]:
+    # TAB 8: INDIVIDUAL RAW FILES DOWNLOAD
+    with tabs[7]:
         st.subheader("📥 Download Cleaned Individual Raw Reports")
-        st.caption("Download each uploaded raw report separately with properly standardized filenames (e.g., SP_Campaign_Report.xlsx, SB_Keyword_Report.xlsx) and numeric metrics fully cleaned.")
+        st.caption("Download each uploaded raw report separately with properly standardized filenames and numeric metrics fully cleaned.")
         
         if all_raw_records:
             col_d1, col_d2 = st.columns(2)
