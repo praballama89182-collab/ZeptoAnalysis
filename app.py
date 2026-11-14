@@ -767,6 +767,10 @@ def main():
 
     st.markdown("---")
 
+    # Built-in SKU -> Category list (no upload needed). Defined once here so the
+    # Product tab and the Category tab map categories the same way.
+    cat_map = get_category_map()
+
     # --- BUILD GRANULAR DATAFRAMES SAFELY ---
     df_camp_view = pd.DataFrame()
     if "Campaign Level" in merged_levels:
@@ -853,6 +857,36 @@ def main():
             if "Campaign_name" in df_prod_view.columns:
                 df_prod_view = df_prod_view.rename(columns={"Campaign_name": "Campaigns"})
             df_prod_view = compute_metrics(df_prod_view).sort_values(by="Revenue", ascending=False).reset_index(drop=True)
+
+            # "Your Category" mapped the same way as the Category tab: built-in
+            # list, VLOOKUP by SKU ID, then SKU code, then SKU name. The SKU ID
+            # lives in the raw Product report, so the mapping is built from the
+            # raw rows (keyed by product name) — no ID column is shown.
+            _prod_cat = {}
+            _id_col = next((c for c in raw_p.columns if c.strip().lower() in ["productid", "product_id", "sku_id", "skuid"]), None)
+            _nm_col = next((c for c in raw_p.columns if c.strip().lower() in ["productname", "product_name"]), None)
+            if _nm_col:
+                _key_cols = [_c for _c in [_id_col, _nm_col] if _c]
+                for _, _r in raw_p[_key_cols].drop_duplicates().iterrows():
+                    _cat = None
+                    if _id_col:
+                        _cat, _ = lookup_user_category(_r[_id_col], cat_map)
+                    if not _cat:
+                        _cat, _ = lookup_user_category(_r[_nm_col], cat_map)
+                    if _cat:
+                        _prod_cat[str(_r[_nm_col])] = _cat
+            df_prod_view["Your Category"] = df_prod_view["ProductName"].astype(str).map(_prod_cat).fillna("")
+            if df_prod_view["Your Category"].astype(str).str.strip().eq("").all():
+                df_prod_view = df_prod_view.drop(columns=["Your Category"])
+
+            # Column order: product name, your category, then the key metrics up
+            # front (Impressions, Spend, Revenue, ROAS, CPM), then the rest by
+            # importance. Spend = spends, Revenue = sales.
+            _prod_order = ["ProductName", "Your Category", "Impressions", "Spend", "Revenue", "ROAS", "CPM",
+                           "Orders", "Clicks", "CTR %", "CPC", "ACOS %", "AOV", "CVR %", "ATC Rate %",
+                           "Atc", "Same_skus", "Other_skus", "Halo Share %", "Campaigns", "Ad Format", "Category"]
+            df_prod_view = df_prod_view[[c for c in _prod_order if c in df_prod_view.columns]
+                                        + [c for c in df_prod_view.columns if c not in _prod_order]]
             export_sheets["Product_Performance"] = df_prod_view
 
     df_cat_view = pd.DataFrame()
@@ -990,6 +1024,8 @@ def main():
                 mask = disp_prod["ProductName"].str.contains(p_search, case=False, na=False)
                 if "Category" in disp_prod.columns:
                     mask = mask | disp_prod["Category"].str.contains(p_search, case=False, na=False)
+                if "Your Category" in disp_prod.columns:
+                    mask = mask | disp_prod["Your Category"].str.contains(p_search, case=False, na=False)
                 disp_prod = disp_prod[mask]
             st.dataframe(style_table(disp_prod), use_container_width=True, hide_index=True)
         else:
@@ -998,7 +1034,6 @@ def main():
     # TAB 5: CATEGORY LEVEL — your categories are built into the app (no upload needed)
     with tabs[4]:
         st.subheader("🗂️ Category-Wise Performance")
-        cat_map = get_category_map()
         st.caption(f"Categories built into the app: {cat_map['Category'].nunique()} categories across {len(cat_map)} SKUs — {', '.join(sorted(cat_map['Category'].unique()))}. VLOOKUP by SKU ID, then SKU, then SKU name.")
 
         _cs = pd.DataFrame()
