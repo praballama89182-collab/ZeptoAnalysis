@@ -633,6 +633,29 @@ def main():
             df_cat_view = compute_metrics(df_cat_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
             export_sheets["Category_Performance"] = df_cat_view
 
+    # Category mapped by SKU / SKU ID: the Product report is the only file that
+    # carries SKU ID, SKU and Category together, so the mapping is built from it.
+    df_cat_sku_view = pd.DataFrame()
+    if "Product Level" in merged_levels:
+        raw_ps = merged_levels["Product Level"].copy()
+        sku_id_col = next((c for c in raw_ps.columns if c.strip().lower() in ["productid", "product_id", "sku_id", "skuid"]), None)
+        prod_col = next((c for c in raw_ps.columns if c.strip().lower() in ["productname", "product_name"]), None)
+        if prod_col and "Category" in raw_ps.columns:
+            grp_cols = [c for c in [sku_id_col, prod_col, "Category", "Ad Format"] if c in raw_ps.columns]
+            agg_dict = {
+                "Impressions": "sum", "Clicks": "sum",
+                "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
+                "Same_skus": "sum", "Other_skus": "sum"
+            }
+            agg_dict = {k: v for k, v in agg_dict.items() if k in raw_ps.columns}
+            df_cat_sku_view = raw_ps.groupby(grp_cols, as_index=False).agg(agg_dict)
+            if sku_id_col and sku_id_col != "SKU ID":
+                df_cat_sku_view = df_cat_sku_view.rename(columns={sku_id_col: "SKU ID"})
+            if prod_col != "SKU":
+                df_cat_sku_view = df_cat_sku_view.rename(columns={prod_col: "SKU"})
+            df_cat_sku_view = compute_metrics(df_cat_sku_view).sort_values(by=["Category", "Spend"], ascending=[True, False]).reset_index(drop=True)
+            export_sheets["Category_by_SKU"] = df_cat_sku_view
+
     df_kw_view = pd.DataFrame()
     if "Keyword Level" in merged_levels:
         raw_kw = merged_levels["Keyword Level"].copy()
@@ -658,13 +681,14 @@ def main():
             df_kw_view = compute_metrics(df_kw_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
             export_sheets["Keyword_Performance"] = df_kw_view
 
-    # --- 7 CORE ANALYTICAL TABS ---
+    # --- 8 CORE ANALYTICAL TABS ---
     tabs = st.tabs([
         "🎯 Campaign Level",
         "🏷️ Campaign Type Level",
         "🏙️ City Level",
         "📦 Product (SKU) Level",
         "🗂️ Category Level",
+        "🔗 Category by SKU",
         "🔑 Keyword Level",
         "💡 Actionable Insights & Waste"
     ])
@@ -750,8 +774,31 @@ def main():
         else:
             st.info("Upload a **Category Level** report to view category-level spend and ROAS.")
 
-    # TAB 6: KEYWORD LEVEL
+    # TAB 6: CATEGORY BY SKU
     with tabs[5]:
+        st.subheader("🔗 Category by SKU — every SKU mapped to its category")
+        if not df_cat_sku_view.empty:
+            cs_f1, cs_f2 = st.columns([1.2, 2])
+            with cs_f1:
+                cs_fmt = st.radio("Ad Format", ["All", "Sponsored Products", "Sponsored Brands"], horizontal=True, key="catsku_fmt")
+            with cs_f2:
+                cs_search = st.text_input("Search SKU / SKU ID / Category", "", key="catsku_search")
+
+            disp_cs = df_cat_sku_view.copy()
+            if cs_fmt != "All":
+                disp_cs = disp_cs[disp_cs["Ad Format"] == cs_fmt]
+            if cs_search:
+                _mask = pd.Series(False, index=disp_cs.index)
+                for _c in ["SKU", "SKU ID", "Category"]:
+                    if _c in disp_cs.columns:
+                        _mask = _mask | disp_cs[_c].astype(str).str.contains(cs_search, case=False, na=False)
+                disp_cs = disp_cs[_mask]
+            st.dataframe(style_table(disp_cs), use_container_width=True, hide_index=True)
+        else:
+            st.info("Upload a **Product Level** report (it carries SKU ID, SKU and Category) to map categories by SKU.")
+
+    # TAB 7: KEYWORD LEVEL
+    with tabs[6]:
         st.subheader("🔑 Keyword-Wise Performance")
         if not df_kw_view.empty:
             k_f1, k_f2, k_f3 = st.columns([1.3, 1.7, 1])
@@ -777,8 +824,8 @@ def main():
         else:
             st.info("Upload a **Keyword Level** report to view keyword performance.")
 
-    # TAB 7: ACTIONABLE INSIGHTS & WASTE DETECTOR
-    with tabs[6]:
+    # TAB 8: ACTIONABLE INSIGHTS & WASTE DETECTOR
+    with tabs[7]:
         st.subheader("💡 Automated Optimization Insights")
 
         if not df_kw_view.empty and "Orders" in df_kw_view.columns and "Spend" in df_kw_view.columns:
