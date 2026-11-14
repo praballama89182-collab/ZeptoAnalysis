@@ -290,10 +290,11 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
                 df_raw = pd.read_csv(f)
             else:
                 df_raw = pd.read_excel(f, engine="openpyxl")
-            
+
             level = identify_zepto_report(df_raw)
             df_cleaned_raw = clean_numeric_cols(df_raw)
-            
+            df_cleaned_raw["Ad Format"] = ad_format_label
+
             prefix = "SP" if ad_format_label == "Sponsored Products" else "SB"
             level_code = level.replace(" Level", "").replace(" ", "_")
             proper_filename = f"{prefix}_{level_code}.xlsx"
@@ -436,19 +437,19 @@ def main():
     # --- CONSOLIDATED RAW: STRICTLY EXACT REQUESTED COLUMNS FROM CAMPAIGN REPORT ---
     if "Campaign Level" in merged_levels and not merged_levels["Campaign Level"].empty:
         raw_camp_df = merged_levels["Campaign Level"].copy()
-        
+
         requested_raw_cols = [
             "Duration", "CampaignName", "BrandID", "BrandName", "CampaignType",
             "Atc", "Clicks", "Cpc", "Cpm", "Daily_budget", "Impressions",
             "Orders", "Other_skus", "Revenue", "Roas", "Robas", "Same_skus",
             "Spend", "Status"
         ]
-        
+
         if "Duration" in raw_camp_df.columns:
             raw_camp_df["Duration"] = duration_val
         else:
             raw_camp_df.insert(0, "Duration", duration_val)
-            
+
         existing_req_cols = [c for c in requested_raw_cols if c in raw_camp_df.columns]
         consolidated_raw_df = raw_camp_df[existing_req_cols].copy()
         export_sheets["Consolidated_Raw"] = consolidated_raw_df
@@ -496,22 +497,22 @@ def main():
     df_camp_view = pd.DataFrame()
     if "Campaign Level" in merged_levels:
         raw_c = merged_levels["Campaign Level"].copy()
-        
+
         grp_candidates = ["CampaignName", "Ad Format"]
         if "CampaignType" in raw_c.columns:
             grp_candidates.append("CampaignType")
         if "Status" in raw_c.columns:
             grp_candidates.append("Status")
-            
+
         grp_cols = [c for c in grp_candidates if c in raw_c.columns]
-        
+
         agg_dict = {
             "Impressions": "sum", "Clicks": "sum", "Atc": "sum",
             "Spend": "sum", "Orders": "sum", "Revenue": "sum",
             "Same_skus": "sum", "Other_skus": "sum"
         }
         agg_dict = {k: v for k, v in agg_dict.items() if k in raw_c.columns}
-        
+
         if grp_cols:
             df_camp_view = raw_c.groupby(grp_cols, as_index=False).agg(agg_dict)
             df_camp_view = compute_metrics(df_camp_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
@@ -524,14 +525,14 @@ def main():
             raw_ct["CampaignType"] = "Unassigned / Other"
         else:
             raw_ct["CampaignType"] = raw_ct["CampaignType"].fillna("Unassigned / Other")
-            
+
         agg_dict = {
             "CampaignName": "nunique", "Impressions": "sum", "Clicks": "sum",
             "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
             "Same_skus": "sum", "Other_skus": "sum"
         }
         agg_dict = {k: v for k, v in agg_dict.items() if k in raw_ct.columns}
-        
+
         group_keys = [k for k in ["CampaignType", "Ad Format"] if k in raw_ct.columns]
         if group_keys:
             df_camp_type_view = raw_ct.groupby(group_keys, as_index=False).agg(agg_dict)
@@ -564,7 +565,7 @@ def main():
             if "Category" in raw_p.columns:
                 grp_cols.append("Category")
             grp_cols = [c for c in grp_cols if c in raw_p.columns]
-            
+
             agg_dict = {
                 "Campaign_name": "nunique" if "Campaign_name" in raw_p.columns else "CampaignName" if "CampaignName" in raw_p.columns else "Spend",
                 "Impressions": "sum", "Clicks": "sum",
