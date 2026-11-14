@@ -7,6 +7,7 @@ channel-level KPIs without double-counting, and generates actionable insights.
 """
 
 import io
+import zipfile
 import pandas as pd
 import streamlit as st
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -190,11 +191,15 @@ def get_authoritative_totals(channel_reports: dict) -> dict:
     return {"source": "None", "spend": 0.0, "revenue": 0.0, "orders": 0, "clicks": 0, "impressions": 0, "atc": 0}
 
 
-def export_single_file_excel(df: pd.DataFrame) -> bytes:
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name="Sheet1", index=False)
-    return output.getvalue()
+def create_zip_archive(records: list) -> bytes:
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        for rec in records:
+            out = io.BytesIO()
+            with pd.ExcelWriter(out, engine="openpyxl") as writer:
+                rec["df"].to_excel(writer, sheet_name="Sheet1", index=False)
+            zip_file.writestr(rec["filename"], out.getvalue())
+    return zip_buffer.getvalue()
 
 
 def export_excel_workbook(sheets_dict: dict) -> bytes:
@@ -266,7 +271,6 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
                         else:
                             cell.number_format = "#,##0.00"
 
-            # Highly compact column width fitting tightly to content and header size
             for col_idx in range(1, max_col + 1):
                 col_letter = get_column_letter(col_idx)
                 max_len = 0
@@ -282,7 +286,6 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
 def parse_uploaded_files(uploaded_files, ad_format_label: str):
     reports = {}
     raw_file_records = []
-    original_raw_records = []
     detected_log = []
     for f in uploaded_files:
         try:
@@ -292,14 +295,11 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
                 df_raw = pd.read_excel(f, engine="openpyxl")
             
             level = identify_zepto_report(df_raw)
-            
-            # 1. Cleaned version
             df_cleaned_raw = clean_numeric_cols(df_raw)
-            df_cleaned_raw["Ad Format"] = ad_format_label
-
+            
             prefix = "SP" if ad_format_label == "Sponsored Products" else "SB"
             level_code = level.replace(" Level", "").replace(" ", "_")
-            proper_filename = f"{prefix}_{level_code}_Report.xlsx"
+            proper_filename = f"{prefix}_{level_code}.xlsx"
 
             raw_file_records.append({
                 "filename": proper_filename,
@@ -307,17 +307,6 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
                 "level": level,
                 "ad_format": ad_format_label,
                 "df": df_cleaned_raw
-            })
-
-            # 2. Original format version (properly named like SP_Campaign.xlsx, SB_Keyword.xlsx with metrics as values)
-            df_orig_numeric = clean_numeric_cols(df_raw)
-            orig_filename = f"{prefix}_{level_code}.xlsx"
-            original_raw_records.append({
-                "filename": orig_filename,
-                "original_name": f.name,
-                "level": level,
-                "ad_format": ad_format_label,
-                "df": df_orig_numeric
             })
 
             if level in reports:
@@ -328,7 +317,7 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
             detected_log.append((f.name, level, len(df_cleaned_raw)))
         except Exception as e:
             st.sidebar.error(f"Failed reading {f.name}: {e}")
-    return reports, raw_file_records, original_raw_records, detected_log
+    return reports, raw_file_records, detected_log
 
 
 def main():
@@ -376,10 +365,8 @@ def main():
         target_roas = st.number_input("Target ROAS Benchmark", min_value=1.0, max_value=50.0, value=8.0, step=0.5)
         waste_spend_min = st.number_input("Zero-Order Waste Alert (₹)", min_value=100, max_value=20000, value=1000, step=250)
 
-    sp_reports, sp_raw_records, sp_orig_records, sp_log = parse_uploaded_files(sp_files, "Sponsored Products") if sp_files else ({}, [], [], [])
-    sb_reports, sb_raw_records, sb_orig_records, sb_log = parse_uploaded_files(sb_files, "Sponsored Brands") if sb_files else ({}, [], [], [])
-    all_raw_records = sp_raw_records + sb_raw_records
-    all_orig_records = sp_orig_records + sb_orig_records
+    sp_reports, sp_raw_records, sp_log = parse_uploaded_files(sp_files, "Sponsored Products") if sp_files else ({}, [], [])
+    sb_reports, sb_raw_records, sb_log = parse_uploaded_files(sb_files, "Sponsored Brands") if sb_files else ({}, [], [])
 
     if sp_log or sb_log:
         with st.sidebar:
@@ -600,7 +587,7 @@ def main():
         df_kw_view = compute_metrics(df_kw_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["Keyword_Performance"] = df_kw_view
 
-    # --- MULTI-TAB ANALYTICS (9 TABS INCLUDING DEDICATED SEPARATE DOWNLOADS) ---
+    # --- 7 CORE ANALYTICAL TABS ---
     tabs = st.tabs([
         "🎯 Campaign Level",
         "🏷️ Campaign Type Level",
@@ -608,9 +595,7 @@ def main():
         "📦 Product (SKU) Level",
         "🗂️ Category Level",
         "🔑 Keyword Level",
-        "💡 Actionable Insights & Waste",
-        "📥 Standard Raw Download",
-        "📥 Original Format Raw Download"
+        "💡 Actionable Insights & Waste"
     ])
 
     # TAB 1: CAMPAIGN LEVEL
@@ -739,53 +724,40 @@ def main():
                 st.dataframe(style_table(scale_kw), use_container_width=True, hide_index=True)
                 export_sheets["Scale_Winners"] = scale_kw
 
-    # TAB 8: STANDARD RAW FILES DOWNLOAD
-    with tabs[7]:
-        st.subheader("📥 Standardized Cleaned Raw Reports Download")
-        st.caption("Download each uploaded raw report separately with standardized filenames and numeric metrics fully cleaned.")
-        
-        if all_raw_records:
-            col_d1, col_d2 = st.columns(2)
-            for idx, rec in enumerate(all_raw_records):
-                target_col = col_d1 if idx % 2 == 0 else col_d2
-                with target_col:
-                    file_bytes = export_single_file_excel(rec["df"])
-                    badge_color = "badge-sp" if rec["ad_format"] == "Sponsored Products" else "badge-sb"
-                    st.markdown(f"<span class='{badge_color}'>{rec['ad_format']}</span> <b>{rec['level']}</b>", unsafe_allow_html=True)
-                    st.download_button(
-                        label=f"⬇️ Download {rec['filename']}",
-                        data=file_bytes,
-                        file_name=rec["filename"],
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key=f"dl_raw_{idx}"
-                    )
-        else:
-            st.info("No raw files uploaded yet.")
+    # --- ADDITIONAL DOWNLOAD BUTTONS FOR RAW ZIP ARCHIVES (BELOW TABS) ---
+    st.markdown("---")
+    st.subheader("📥 Bulk Raw Report Downloads (ZIP Archives)")
+    st.caption("Download all uploaded raw files grouped by ad format as ZIP archives, with metrics properly converted to numerical values and clean filenames.")
 
-    # TAB 9: ORIGINAL FORMAT RAW FILES DOWNLOAD (PROPERLY NAMED LIKE SP_Campaign.xlsx, SB_Keyword.xlsx)
-    with tabs[8]:
-        st.subheader("📥 Original Format Raw Files Download (Properly Named with Metrics as Values)")
-        st.caption("Download each uploaded raw file in its exact original structure, properly named (e.g., SP_Campaign.xlsx, SB_Keyword.xlsx), with all text-stored numbers converted to proper numerical values.")
-        
-        if all_orig_records:
-            col_o1, col_o2 = st.columns(2)
-            for idx, rec in enumerate(all_orig_records):
-                target_col = col_o1 if idx % 2 == 0 else col_o2
-                with target_col:
-                    file_bytes = export_single_file_excel(rec["df"])
-                    badge_color = "badge-sp" if rec["ad_format"] == "Sponsored Products" else "badge-sb"
-                    st.markdown(f"<span class='{badge_color}'>{rec['ad_format']}</span> <b>{rec['level']}</b> — <small>Original: {rec['original_name']}</small>", unsafe_allow_html=True)
-                    st.download_button(
-                        label=f"⬇️ Download {rec['filename']}",
-                        data=file_bytes,
-                        file_name=rec["filename"],
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key=f"dl_orig_{idx}"
-                    )
-        else:
-            st.info("No raw files uploaded yet.")
+    dl_col1, dl_col2 = st.columns(2)
 
-    # MASTER EXCEL DOWNLOAD
+    with dl_col1:
+        if sp_raw_records:
+            sp_zip_bytes = create_zip_archive(sp_raw_records)
+            st.download_button(
+                label="📦 Download SP Raw Files (ZIP)",
+                data=sp_zip_bytes,
+                file_name="SP_Raw_Reports_Bundle.zip",
+                mime="application/zip",
+                key="download_sp_zip"
+            )
+        else:
+            st.info("No Sponsored Products (SP) raw files uploaded.")
+
+    with dl_col2:
+        if sb_raw_records:
+            sb_zip_bytes = create_zip_archive(sb_raw_records)
+            st.download_button(
+                label="📦 Download SB Raw Files (ZIP)",
+                data=sb_zip_bytes,
+                file_name="SB_Raw_Reports_Bundle.zip",
+                mime="application/zip",
+                key="download_sb_zip"
+            )
+        else:
+            st.info("No Sponsored Brands (SB) raw files uploaded.")
+
+    # --- MASTER EXCEL DOWNLOAD ---
     st.markdown("---")
     if export_sheets:
         excel_bytes = export_excel_workbook(export_sheets)
@@ -793,7 +765,8 @@ def main():
             label="📥 Download Complete Zepto Ads Analysis (Excel)",
             data=excel_bytes,
             file_name="Zepto_Ads_Master_Analysis.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key="download_master_excel"
         )
 
 
