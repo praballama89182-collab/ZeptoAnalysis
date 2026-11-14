@@ -88,7 +88,9 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
     ]
     for col in num_candidates:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+            # Robust conversion handling values stored as text (with commas/symbols)
+            s_col = df[col].astype(str).str.replace(",", "", regex=True)
+            df[col] = pd.to_numeric(s_col, errors="coerce").fillna(0.0)
 
     # --- UNIFY CAMPAIGN NAME & ID FIELDS ---
     if "CampaignName" not in df.columns and "Campaign_name" in df.columns:
@@ -108,17 +110,6 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
         df["CityName"] = df["City"]
     elif "City" not in df.columns and "CityName" in df.columns:
         df["City"] = df["CityName"]
-
-    if "CampaignName" in df.columns:
-        def extract_tag(name: str) -> str:
-            s = str(name).strip()
-            if "|" in s:
-                return s.split("|")[0].strip()
-            for token in ["PCA", "SBV", "SPA", "SPCT", "SPM"]:
-                if f"_{token}_" in s or s.endswith(f"_{token}") or s.startswith(f"{token}_"):
-                    return token
-            return "Standard"
-        df["Strategy Tag"] = df["CampaignName"].apply(extract_tag)
 
     return df
 
@@ -161,7 +152,6 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def style_table(df: pd.DataFrame, row_styler=None):
-    """Center/middle aligns all cells and strips decimals on whole numbers while keeping max 2 decimals."""
     num_cols = df.select_dtypes(include=["number"]).columns.tolist()
     fmt = {c: format_smart_number for c in num_cols}
 
@@ -201,16 +191,17 @@ def get_authoritative_totals(channel_reports: dict) -> dict:
     return {"source": "None", "spend": 0.0, "revenue": 0.0, "orders": 0, "clicks": 0, "impressions": 0, "atc": 0}
 
 
+def export_single_file_excel(df: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    with pd.writer if hasattr(pd, 'ExcelWriter') else pd.ExcelWriter(output, engine="openpyxl") as writer:
+        pass
+    # Helper to export individual clean dataframe to excel bytes
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, sheet_name="Sheet1", index=False)
+    return output.getvalue()
+
+
 def export_excel_workbook(sheets_dict: dict) -> bytes:
-    """
-    Exports styled Excel workbook with compact columns fitted tightly to content and header size:
-    - Dark blue header fill (#1B365D) with bold white text
-    - Thin borders on all cells
-    - First column left-aligned & middle-aligned; all metric/other columns center & middle-aligned
-    - Smart number format: whole numbers shown without decimals, decimals rounded to 2 places
-    - Compact, non-oversized column widths fitted closely to column names and data
-    - Frozen header row and filters
-    """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         header_fill = PatternFill(start_color="1B365D", end_color="1B365D", fill_type="solid")
@@ -279,7 +270,6 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
                         else:
                             cell.number_format = "#,##0.00"
 
-            # Compact column width fitting closely to column name and data size without being too large
             for col_idx in range(1, max_col + 1):
                 col_letter = get_column_letter(col_idx)
                 max_len = 0
@@ -294,6 +284,7 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
 
 def parse_uploaded_files(uploaded_files, ad_format_label: str):
     reports = {}
+    raw_file_records = []
     detected_log = []
     for f in uploaded_files:
         try:
@@ -301,19 +292,34 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
                 df_raw = pd.read_csv(f)
             else:
                 df_raw = pd.read_excel(f, engine="openpyxl")
+            
             level = identify_zepto_report(df_raw)
-            df_clean = clean_numeric_cols(df_raw)
-            df_clean["Ad Format"] = ad_format_label
+            
+            # Clean numeric cols while preserving original columns
+            df_cleaned_raw = clean_numeric_cols(df_raw)
+            df_cleaned_raw["Ad Format"] = ad_format_label
+
+            prefix = "SP" if ad_format_label == "Sponsored Products" else "SB"
+            level_code = level.replace(" Level", "").replace(" ", "_")
+            proper_filename = f"{prefix}_{level_code}_Report.xlsx"
+
+            raw_file_records.append({
+                "filename": proper_filename,
+                "original_name": f.name,
+                "level": level,
+                "ad_format": ad_format_label,
+                "df": df_cleaned_raw
+            })
 
             if level in reports:
-                reports[level] = pd.concat([reports[level], df_clean], ignore_index=True)
+                reports[level] = pd.concat([reports[level], df_cleaned_raw], ignore_index=True)
             else:
-                reports[level] = df_clean
+                reports[level] = df_cleaned_raw
 
-            detected_log.append((f.name, level, len(df_clean)))
+            detected_log.append((f.name, level, len(df_cleaned_raw)))
         except Exception as e:
             st.sidebar.error(f"Failed reading {f.name}: {e}")
-    return reports, detected_log
+    return reports, raw_file_records, detected_log
 
 
 def main():
@@ -361,8 +367,8 @@ def main():
         target_roas = st.number_input("Target ROAS Benchmark", min_value=1.0, max_value=50.0, value=8.0, step=0.5)
         waste_spend_min = st.number_input("Zero-Order Waste Alert (₹)", min_value=100, max_value=20000, value=1000, step=250)
 
-    sp_reports, sp_log = parse_uploaded_files(sp_files, "Sponsored Products") if sp_files else ({}, [])
-    sb_reports, sb_log = parse_uploaded_files(sb_files, "Sponsored Brands") if sb_files else ({}, [])
+    sp_reports, sp_raw_records, sp_log = parse_uploaded_files(sp_files, "Sponsored Products") if sp_files else ({}, [], [])
+    sb_reports, sb_raw_records, sb_log = parse_uploaded_files(sb_files, "Sponsored Brands") if sb_files else ({}, [], [])
 
     if sp_log or sb_log:
         with st.sidebar:
@@ -432,39 +438,13 @@ def main():
 
     export_sheets = {}
 
-    # --- CONSOLIDATED RAW ACCUMULATION (STREAMLINED CORE COLUMNS) ---
-    consolidated_raw_parts = []
-    for f_dict, format_label in [(sp_reports, "Sponsored Products"), (sb_reports, "Sponsored Brands")]:
-        for level, df in f_dict.items():
-            if df is not None and not df.empty:
-                tmp = df.copy()
-                tmp["Ad Format"] = format_label
-                tmp["Report Level"] = level
-                consolidated_raw_parts.append(tmp)
-
-    if consolidated_raw_parts:
-        consolidated_raw_df = pd.concat(consolidated_raw_parts, ignore_index=True)
-        
-        # Define clean, compact column ordering for Consolidated_Raw
-        preferred_order = [
-            "Duration", "Ad Format", "Report Level",
-            "BrandID", "BrandName",
-            "CampaignName", "CampaignID", "CampaignType", "Status",
-            "CityName", "ProductID", "ProductName", "Category",
-            "KeywordName", "KeywordMatchType",
-            "Impressions", "Clicks", "CTR %", "Spend", "CPC", "CPM",
-            "Orders", "Revenue", "ROAS", "ACOS %", "Atc",
-            "Same_skus", "Other_skus", "Daily_budget"
-        ]
-        existing_cols = [c for c in preferred_order if c in consolidated_raw_df.columns]
-        other_cols = [c for c in consolidated_raw_df.columns if c not in existing_cols]
-        consolidated_raw_df = consolidated_raw_df[existing_cols + other_cols]
-        
+    all_raw_records = sp_raw_records + sb_raw_records
+    if all_raw_records:
+        consolidated_raw_df = pd.concat([r["df"] for r in all_raw_records], ignore_index=True)
         if "Duration" in consolidated_raw_df.columns:
             consolidated_raw_df["Duration"] = duration_val
         else:
             consolidated_raw_df.insert(0, "Duration", duration_val)
-            
         export_sheets["Consolidated_Raw"] = consolidated_raw_df
 
     if sp_reports and sb_reports:
@@ -584,14 +564,15 @@ def main():
         df_kw_view = compute_metrics(df_kw_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["Keyword_Performance"] = df_kw_view
 
-    # --- MULTI-TAB ANALYTICS ---
+    # --- MULTI-TAB ANALYTICS (INCLUDING NEW RAW FILES DOWNLOAD TAB) ---
     tabs = st.tabs([
         "🎯 Campaign Level",
         "🏙️ City Level",
         "📦 Product (SKU) Level",
         "🗂️ Category Level",
         "🔑 Keyword Level",
-        "💡 Actionable Insights & Waste"
+        "💡 Actionable Insights & Waste",
+        "📥 Raw Files Download"
     ])
 
     # TAB 1: CAMPAIGN LEVEL
@@ -713,6 +694,29 @@ def main():
             if not scale_kw.empty:
                 st.dataframe(style_table(scale_kw), use_container_width=True, hide_index=True)
                 export_sheets["Scale_Winners"] = scale_kw
+
+    # TAB 7: INDIVIDUAL RAW FILES DOWNLOAD
+    with tabs[6]:
+        st.subheader("📥 Download Cleaned Individual Raw Reports")
+        st.caption("Download each uploaded raw report separately with properly standardized filenames (e.g., SP_Campaign_Report.xlsx, SB_Keyword_Report.xlsx) and numeric metrics fully cleaned.")
+        
+        if all_raw_records:
+            col_d1, col_d2 = st.columns(2)
+            for idx, rec in enumerate(all_raw_records):
+                target_col = col_d1 if idx % 2 == 0 else col_d2
+                with target_col:
+                    file_bytes = export_single_file_excel(rec["df"])
+                    badge_color = "badge-sp" if rec["ad_format"] == "Sponsored Products" else "badge-sb"
+                    st.markdown(f"<span class='{badge_color}'>{rec['ad_format']}</span> <b>{rec['level']}</b>", unsafe_allow_html=True)
+                    st.download_button(
+                        label=f"⬇️ Download {rec['filename']}",
+                        data=file_bytes,
+                        file_name=rec["filename"],
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_raw_{idx}"
+                    )
+        else:
+            st.info("No raw files uploaded yet.")
 
     # MASTER EXCEL DOWNLOAD
     st.markdown("---")
