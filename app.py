@@ -24,7 +24,7 @@ st.markdown("""
     .main { background-color: #f8f9fa; }
     .stMetric {
         background-color: #ffffff;
-        padding: 12px 16px;
+        padding: 14px 18px;
         border-radius: 10px;
         border: 1px solid #e2e8f0;
         box-shadow: 0 1px 3px rgba(0,0,0,0.04);
@@ -48,14 +48,6 @@ st.markdown("""
 # --- FILE DETECTION & SCHEMA NORMALIZATION ---
 
 def identify_zepto_report(df: pd.DataFrame) -> str:
-    """
-    Auto-detects Zepto report granularity based on exact column signatures across SP and SB:
-    - City Level: contains City / CityName column
-    - Product Level: contains ProductID / ProductName
-    - Keyword Level: contains KeywordName / KeywordMatchType
-    - Category Level: contains Category (without ProductID)
-    - Campaign Level: contains CampaignName + CampaignType / Daily_budget / Status
-    """
     cols = {c.strip().lower() for c in df.columns}
     if "city" in cols or "cityname" in cols:
         return "City Level"
@@ -104,7 +96,6 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
-    """Computes clean funnel & profitability metrics."""
     df = df.copy()
     spend = df["Spend"] if "Spend" in df.columns else 0
     rev = df["Revenue"] if "Revenue" in df.columns else 0
@@ -142,7 +133,6 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def style_table(df: pd.DataFrame, row_styler=None):
-    """Applies center alignment and strict max-2-decimal formatting."""
     dec_cols = [
         "Spend", "Revenue", "ROAS", "Robas", "ACOS %", "CTR %",
         "CPC", "CPM", "ATC Rate %", "CVR %", "AOV", "Halo Share %",
@@ -284,7 +274,6 @@ def main():
     comb_clicks = sp_tot["clicks"] + sb_tot["clicks"]
     comb_imps = sp_tot["impressions"] + sb_tot["impressions"]
     comb_roas = comb_rev / comb_spend if comb_spend > 0 else 0.0
-    comb_acos = (comb_spend / comb_rev * 100) if comb_rev > 0 else 0.0
     comb_cvr = (comb_orders / comb_clicks * 100) if comb_clicks > 0 else 0.0
     comb_aov = comb_rev / comb_orders if comb_orders > 0 else 0.0
 
@@ -296,17 +285,16 @@ def main():
         active_modes.append(f"Sponsored Brands ({len(sb_reports)} levels)")
     st.caption(f"**Active Scope:** {' + '.join(active_modes)}  |  Deduplicated totals across Campaign, City, Product, Category & Keyword exports")
 
-    r1c1, r1c2, r1c3, r1c4 = st.columns(4)
-    r1c1.metric("Total Ad Sales", f"₹{comb_rev:,.2f}")
-    r1c2.metric("Total Ad Spend", f"₹{comb_spend:,.2f}")
-    r1c3.metric("Total Orders", f"{comb_orders:,}")
-    r1c4.metric("Ad ROAS (Overall)", f"{comb_roas:.2f}x")
+    # --- TOP 6 KEY METRICS (2 ROWS OF 3 FOR MAXIMUM READABILITY) ---
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Total Ad Sales", f"₹{comb_rev:,.2f}")
+    m2.metric("Total Ad Spend", f"₹{comb_spend:,.2f}")
+    m3.metric("Ad ROAS", f"{comb_roas:.2f}x")
 
-    r2c1, r2c2, r2c3, r2c4 = st.columns(4)
-    r2c1.metric("Overall ACOS %", f"{comb_acos:.2f}%")
-    r2c2.metric("Conversion Rate (CVR)", f"{comb_cvr:.2f}%")
-    r2c3.metric("Average Order Value", f"₹{comb_aov:,.2f}")
-    r2c4.metric("Clicks / Impressions", f"{comb_clicks:,} / {comb_imps:,}")
+    m4, m5, m6 = st.columns(3)
+    m4.metric("Total Orders", f"{comb_orders:,}")
+    m5.metric("Conversion Rate (CVR)", f"{comb_cvr:.2f}%")
+    m6.metric("Average Order Value (AOV)", f"₹{comb_aov:,.2f}")
 
     export_sheets = {}
 
