@@ -7,6 +7,7 @@ channel-level KPIs without double-counting, and generates actionable insights.
 """
 
 import io
+import re
 import zipfile
 import pandas as pd
 import streamlit as st
@@ -168,6 +169,231 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
             df[c] = df[c].round(2)
 
     return df
+
+
+def find_product(query, prod):
+    """Search one SKU name / SKU ID in the Product report. Returns (row, how)."""
+    q = str(query).strip().lower()
+    if not q:
+        return None, "empty input"
+    if "ProductID" in prod.columns:
+        _id = prod["ProductID"].astype(str).str.strip().str.lower()
+        m = prod[_id == q]
+        if len(m) == 1:
+            return m.iloc[0], "matched by SKU ID"
+    _name = prod["ProductName"].astype(str).str.strip().str.lower()
+    m = prod[_name == q]
+    if len(m) == 1:
+        return m.iloc[0], "matched by SKU name (exact)"
+    m = prod[_name.str.contains(q, regex=False)]
+    if len(m) == 1:
+        return m.iloc[0], "matched by SKU name (contains)"
+    if len(m) > 1:
+        return None, f"ambiguous - {len(m)} products contain '{query}'"
+    m = prod[_name.apply(lambda n: n in q)]
+    if len(m) == 1:
+        return m.iloc[0], "matched by SKU name (input contains stored name)"
+    if len(m) > 1:
+        return None, f"ambiguous - {len(m)} products are contained in '{query}'"
+    return None, "NO MATCH - not in the raw data"
+
+
+def suggest_category(name, prod_df):
+    """Best-fit category for a SKU with no raw match, inferred from its name.
+    1. Word overlap with the Product report (prefix matching, so a cut-off
+       name like 'Kratos K14 Se' can still match 'Selfie').
+    2. Product-type hints in the name (PB = power bank, K-number = selfie
+       stick, holder, earbuds...), mapped to the category that type lives in.
+    Returns (category, reason) or (None, None). Nothing is invented silently:
+    the caller flags every inferred row in the Match column."""
+    q = str(name).strip().lower()
+    if not q:
+        return None, None
+    tokens = re.findall(r"[a-z0-9]+", q)
+    stop = {"kratos", "the", "with", "for", "and", "in", "of", "a", "an"}
+    cat_words = {}
+    for cat, sub in prod_df.groupby("Category"):
+        words = set()
+        for pn in sub["ProductName"].astype(str):
+            words |= set(re.findall(r"[a-z0-9]+", pn.lower()))
+        cat_words[cat] = words
+
+    scores = {}
+    for cat, words in cat_words.items():
+        s = 0.0
+        for t in tokens:
+            if t in stop or len(t) < 3:
+                continue
+            if any(w.startswith(t) or t.startswith(w) for w in words):
+                ncat = sum(1 for ws in cat_words.values() if any(w.startswith(t) or t.startswith(w) for w in ws))
+                s += 1.0 / max(ncat, 1)
+        scores[cat] = s
+    best = max(scores, key=scores.get)
+    if scores[best] > 0:
+        return best, "best-fit from name words"
+
+    type_hints = [
+        (r"\bpb\d*\b", "power"), (r"power\s*bank", "power"),
+        (r"charger|adapter|cable", "charger"),
+        (r"\bk\d+\b", "selfie"), (r"selfie|tripod|ring\s*light|microphone|\bmic\b", "selfie"),
+        (r"earbud|\btws\b|earphone|headphone", "earbud"),
+        (r"holder", "holder"),
+    ]
+    for pattern, type_word in type_hints:
+        if re.search(pattern, q):
+            counts = {}
+            for cat, sub in prod_df.groupby("Category"):
+                counts[cat] = int(sub["ProductName"].astype(str).str.lower().str.contains(type_word, regex=False).sum())
+            top = max(counts, key=counts.get)
+            if counts[top] > 0:
+                return top, f"best-fit: '{type_word}' type"
+    return None, None
+
+
+def _clean_cell(v):
+    s = str(v).strip()
+    return "" if s.lower() in ("", "nan", "none") else s
+
+
+def load_category_map(uploaded_file):
+    """Read the user's SKU -> Category sheet (columns: SKU ID, SKU, SKU Name, Category).
+    Returns a DataFrame with those columns plus lowercase _id / _sku / _name helpers,
+    or None if the file can't be read or has no Category column."""
+    try:
+        if uploaded_file.name.lower().endswith(".csv"):
+            df = pd.read_csv(uploaded_file)
+        else:
+            df = pd.read_excel(uploaded_file, engine="openpyxl")
+    except Exception as e:
+        st.error(f"Could not read your category sheet: {e}")
+        return None
+    df.columns = [str(c).strip() for c in df.columns]
+    lower = {c.lower(): c for c in df.columns}
+    id_col = next((lower[k] for k in lower if k in ("sku id", "sku_id", "skuid", "productid", "product_id")), None)
+    sku_col = next((lower[k] for k in lower if k in ("sku", "sku code", "sku_code")), None)
+    name_col = next((lower[k] for k in lower if k in ("sku name", "sku_name", "skuname", "productname", "product_name", "product name")), None)
+    cat_col = next((lower[k] for k in lower if k in ("category", "your category", "sub category", "sub-category", "sub_category")), None)
+    if cat_col is None:
+        st.error("Your category sheet needs a 'Category' column.")
+        return None
+    out = pd.DataFrame({
+        "SKU ID": [_clean_cell(v) for v in (df[id_col] if id_col else [""] * len(df))],
+        "SKU": [_clean_cell(v) for v in (df[sku_col] if sku_col else [""] * len(df))],
+        "SKU Name": [_clean_cell(v) for v in (df[name_col] if name_col else [""] * len(df))],
+        "Category": [_clean_cell(v) for v in df[cat_col]],
+    })
+    out = out[out["Category"] != ""].reset_index(drop=True)
+    if out.empty:
+        st.error("Your category sheet has no rows with a Category filled in.")
+        return None
+    out["_id"] = out["SKU ID"].str.lower()
+    out["_sku"] = out["SKU"].str.lower()
+    out["_name"] = out["SKU Name"].str.lower()
+    return out
+
+
+def lookup_user_row(query, cat_map):
+    """VLOOKUP one value in the user's category sheet: SKU ID, then SKU code, then SKU Name.
+    Returns (row, how) or (None, None)."""
+    q = str(query).strip().lower()
+    if not q or q == "nan":
+        return None, None
+    m = cat_map[cat_map["_id"] == q]
+    if len(m) >= 1:
+        return m.iloc[0], "your sheet (SKU ID)"
+    m = cat_map[cat_map["_sku"] == q]
+    if len(m) >= 1:
+        return m.iloc[0], "your sheet (SKU)"
+    m = cat_map[cat_map["_name"] == q]
+    if len(m) >= 1:
+        return m.iloc[0], "your sheet (SKU name, exact)"
+    m = cat_map[cat_map["_name"].str.contains(q, regex=False)]
+    if len(m) == 1:
+        return m.iloc[0], "your sheet (SKU name)"
+    if len(m) > 1:
+        cats = m["Category"].dropna().unique()
+        if len(cats) == 1:
+            return m.iloc[0], "your sheet (SKU name, shared category)"
+    m = cat_map[cat_map["_name"].apply(lambda n: bool(n) and n in q)]
+    if len(m) == 1:
+        return m.iloc[0], "your sheet (SKU name, contains)"
+    return None, None
+
+
+def lookup_user_category(query, cat_map):
+    """VLOOKUP just the category for one value in the user's category sheet."""
+    row, how = lookup_user_row(query, cat_map)
+    if row is None:
+        return None, None
+    return row["Category"], how
+
+
+def map_categories(sku_names, prod_df, cat_map=None):
+    """Map a list of SKU names / SKU IDs to SKU ID, SKU and Category.
+    With the user's category sheet uploaded, that sheet is tried first
+    (VLOOKUP by SKU ID, then SKU code, then SKU name) and only the user's
+    categories are ever assigned. Without it, the Zepto Product report is
+    used, with a best-fit category inferred for unmatched names.
+    Raw match first (SKU ID, then SKU name). If the raw match is ambiguous but
+    every candidate shares one category, that category is used."""
+    user_cats = set(cat_map["Category"].dropna().unique()) if cat_map is not None else None
+    if prod_df is None or prod_df.empty or "ProductName" not in prod_df.columns:
+        prod = pd.DataFrame(columns=["ProductID", "ProductName", "Category"])
+    elif "ProductID" in prod_df.columns:
+        prod = prod_df[["ProductID", "ProductName", "Category"]].drop_duplicates().reset_index(drop=True)
+    else:
+        prod = prod_df[["ProductName", "Category"]].drop_duplicates().reset_index(drop=True)
+    if "ProductID" not in prod.columns:
+        prod["ProductID"] = ""
+    _name = prod["ProductName"].astype(str).str.strip().str.lower()
+    used_ids = set()
+    out = []
+    for name in sku_names:
+        if cat_map is not None:
+            _urow, _uhow = lookup_user_row(name, cat_map)
+            if _urow is not None:
+                out.append({"SKU Name": _clean_cell(_urow["SKU Name"]) or str(name),
+                            "SKU ID": _clean_cell(_urow["SKU ID"]),
+                            "SKU": _clean_cell(_urow["SKU"]),
+                            "Category": _urow["Category"],
+                            "Match": _uhow})
+                continue
+        row, how = find_product(name, prod)
+        if row is None:
+            if how.startswith("ambiguous"):
+                _cands = prod[_name.str.contains(str(name).strip().lower(), regex=False)]
+                _cats = _cands["Category"].dropna().unique()
+                if len(_cats) == 1 and (user_cats is None or _cats[0] in user_cats):
+                    out.append({"SKU Name": str(name), "SKU ID": "", "SKU": "", "Category": _cats[0],
+                                "Match": "ambiguous SKU, but all matches share this category"})
+                    continue
+            if cat_map is not None:
+                out.append({"SKU Name": str(name), "SKU ID": "", "SKU": "", "Category": "",
+                            "Match": "not in your category sheet — no category assigned"})
+                continue
+            cat, reason = suggest_category(name, prod)
+            if cat:
+                out.append({"SKU Name": str(name), "SKU ID": "", "SKU": "", "Category": cat,
+                            "Match": f"no raw match — best-fit category ({reason}); please confirm"})
+            else:
+                out.append({"SKU Name": str(name), "SKU ID": "", "SKU": "", "Category": "",
+                            "Match": "NO MATCH — no fit found; needs your call"})
+            continue
+        pid = row["ProductID"]
+        _cat = row["Category"]
+        _note = ""
+        if user_cats is not None and _cat not in user_cats:
+            _cat = ""
+            _note = " — category not in your sheet"
+        if pid in used_ids:
+            out.append({"SKU Name": row["ProductName"], "SKU ID": pid, "SKU": row["ProductName"],
+                        "Category": _cat,
+                        "Match": "DUPLICATE - same product as an earlier row; please confirm" + _note})
+        else:
+            used_ids.add(pid)
+            out.append({"SKU Name": row["ProductName"], "SKU ID": pid, "SKU": row["ProductName"],
+                        "Category": _cat, "Match": how + _note})
+    return pd.DataFrame(out)
 
 
 def style_table(df: pd.DataFrame, row_styler=None):
@@ -777,6 +1003,14 @@ def main():
     # TAB 6: CATEGORY BY SKU
     with tabs[5]:
         st.subheader("🔗 Category by SKU — every SKU mapped to its category")
+
+        st.markdown("##### 📋 Your category sheet (optional)")
+        st.caption("Upload your own SKU → Category sheet (columns: SKU ID, SKU, SKU Name, Category). The category analysis below then uses YOUR categories, mapped by VLOOKUP on SKU ID first, then SKU, then SKU name. Without it, the Zepto report's own categories are used.")
+        cat_map_file = st.file_uploader("Upload your category sheet (.xlsx / .csv)", type=["xlsx", "xls", "csv"], key="cat_map_file")
+        cat_map = load_category_map(cat_map_file) if cat_map_file is not None else None
+        if cat_map is not None:
+            st.caption(f"Your categories loaded: {cat_map['Category'].nunique()} categories across {len(cat_map)} SKUs — {', '.join(sorted(cat_map['Category'].unique()))}.")
+
         if not df_cat_sku_view.empty:
             cs_f1, cs_f2 = st.columns([1.2, 2])
             with cs_f1:
@@ -785,17 +1019,75 @@ def main():
                 cs_search = st.text_input("Search SKU / SKU ID / Category", "", key="catsku_search")
 
             disp_cs = df_cat_sku_view.copy()
+            _full_cs = disp_cs
+            if cat_map is not None:
+                def _your_cat(r):
+                    cat, _ = lookup_user_category(r.get("SKU ID", ""), cat_map)
+                    if cat:
+                        return cat
+                    cat, _ = lookup_user_category(r.get("SKU", ""), cat_map)
+                    return cat or ""
+                disp_cs["Your Category"] = disp_cs.apply(_your_cat, axis=1)
+                _cols = list(disp_cs.columns)
+                _cols.remove("Your Category")
+                _pos = _cols.index("Category") + 1 if "Category" in _cols else len(_cols)
+                _cols.insert(_pos, "Your Category")
+                disp_cs = disp_cs[_cols]
+                _full_cs = disp_cs
+                export_sheets["Category_by_SKU"] = disp_cs
             if cs_fmt != "All":
                 disp_cs = disp_cs[disp_cs["Ad Format"] == cs_fmt]
             if cs_search:
                 _mask = pd.Series(False, index=disp_cs.index)
-                for _c in ["SKU", "SKU ID", "Category"]:
+                for _c in ["SKU", "SKU ID", "Category", "Your Category"]:
                     if _c in disp_cs.columns:
                         _mask = _mask | disp_cs[_c].astype(str).str.contains(cs_search, case=False, na=False)
                 disp_cs = disp_cs[_mask]
             st.dataframe(style_table(disp_cs), use_container_width=True, hide_index=True)
+
+            # Category analysis with YOUR categories: spend / revenue / ROAS per sub-category.
+            if cat_map is not None:
+                _yc = _full_cs[_full_cs["Your Category"].astype(str).str.strip() != ""]
+                if not _yc.empty:
+                    _agg = {k: "sum" for k in ["Impressions", "Clicks", "Atc", "Spend", "Orders", "Revenue", "Same_skus", "Other_skus"] if k in _yc.columns}
+                    df_your_cat = _yc.groupby("Your Category", as_index=False).agg(_agg)
+                    df_your_cat = compute_metrics(df_your_cat).sort_values(by="Spend", ascending=False).reset_index(drop=True)
+                    st.markdown("##### 🗂️ Category analysis — your categories")
+                    st.caption("Spend, revenue and ROAS per category from your sheet, built from the Product report by VLOOKUP on SKU ID / SKU name.")
+                    st.dataframe(style_table(df_your_cat), use_container_width=True, hide_index=True)
+                    export_sheets["Category_Your_Categories"] = df_your_cat
         else:
             st.info("Upload a **Product Level** report (it carries SKU ID, SKU and Category) to map categories by SKU.")
+
+        st.markdown("---")
+        st.markdown("##### 🔍 Map your own SKU list")
+        st.caption("Paste SKU names, SKU IDs or SKU codes (one per line), or upload your sheet. Each value is looked up in your category sheet first — by SKU ID, then SKU, then SKU name — and only your categories are assigned. Anything not in your sheet falls back to the Zepto Product report, and is flagged in the Match column.")
+        map_input = st.text_area("SKU names, SKU IDs or SKU codes (one per line)", "", key="catsku_map_input", height=120)
+        map_file = st.file_uploader("Or upload your SKU list (.xlsx / .csv with a 'SKU Name' column)", type=["xlsx", "xls", "csv"], key="catsku_map_file")
+        if st.button("Map categories", key="catsku_map_btn"):
+            _names = []
+            if map_file is not None:
+                try:
+                    if map_file.name.lower().endswith(".csv"):
+                        _up = pd.read_csv(map_file)
+                    else:
+                        _up = pd.read_excel(map_file, engine="openpyxl")
+                    _col = next((c for c in _up.columns if c.strip().lower() in ["sku name", "sku_name", "skuname", "productname", "product_name"]), None)
+                    _names = _up[_col].dropna().astype(str).tolist() if _col is not None else _up.iloc[:, 0].dropna().astype(str).tolist()
+                except Exception as e:
+                    st.error(f"Could not read your list: {e}")
+            if map_input.strip():
+                _names += [ln.strip() for ln in map_input.splitlines() if ln.strip()]
+            if not _names:
+                st.warning("Paste at least one SKU name or ID, or upload your list.")
+            elif "Product Level" not in merged_levels and cat_map is None:
+                st.info("Upload a **Product Level** report first — it is the only file that carries SKU ID, SKU and Category together.")
+            else:
+                _mapped = map_categories(_names, merged_levels.get("Product Level", pd.DataFrame()), cat_map=cat_map)
+                st.dataframe(style_table(_mapped), use_container_width=True, hide_index=True)
+                export_sheets["My_List_Mapped"] = _mapped
+                _n_ok = int((_mapped["Category"].astype(str).str.strip() != "").sum())
+                st.caption(f"{_n_ok} of {len(_mapped)} have a category; the rest are flagged in the Match column.")
 
     # TAB 7: KEYWORD LEVEL
     with tabs[6]:
