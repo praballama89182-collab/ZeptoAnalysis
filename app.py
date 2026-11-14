@@ -282,6 +282,7 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
 def parse_uploaded_files(uploaded_files, ad_format_label: str):
     reports = {}
     raw_file_records = []
+    original_raw_records = []
     detected_log = []
     for f in uploaded_files:
         try:
@@ -291,6 +292,8 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
                 df_raw = pd.read_excel(f, engine="openpyxl")
             
             level = identify_zepto_report(df_raw)
+            
+            # 1. Cleaned version (metrics converted from text to numeric)
             df_cleaned_raw = clean_numeric_cols(df_raw)
             df_cleaned_raw["Ad Format"] = ad_format_label
 
@@ -306,6 +309,16 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
                 "df": df_cleaned_raw
             })
 
+            # 2. Original format version (exact original columns and rows, but metrics stored as text converted to proper numerical values)
+            df_orig_numeric = clean_numeric_cols(df_raw)
+            original_raw_records.append({
+                "filename": f"{prefix}_{level_code}_Original_Format_{f.name}",
+                "original_name": f.name,
+                "level": level,
+                "ad_format": ad_format_label,
+                "df": df_orig_numeric
+            })
+
             if level in reports:
                 reports[level] = pd.concat([reports[level], df_cleaned_raw], ignore_index=True)
             else:
@@ -314,7 +327,7 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
             detected_log.append((f.name, level, len(df_cleaned_raw)))
         except Exception as e:
             st.sidebar.error(f"Failed reading {f.name}: {e}")
-    return reports, raw_file_records, detected_log
+    return reports, raw_file_records, original_raw_records, detected_log
 
 
 def main():
@@ -362,8 +375,10 @@ def main():
         target_roas = st.number_input("Target ROAS Benchmark", min_value=1.0, max_value=50.0, value=8.0, step=0.5)
         waste_spend_min = st.number_input("Zero-Order Waste Alert (₹)", min_value=100, max_value=20000, value=1000, step=250)
 
-    sp_reports, sp_raw_records, sp_log = parse_uploaded_files(sp_files, "Sponsored Products") if sp_files else ({}, [], [])
-    sb_reports, sb_raw_records, sb_log = parse_uploaded_files(sb_files, "Sponsored Brands") if sb_files else ({}, [], [])
+    sp_reports, sp_raw_records, sp_orig_records, sp_log = parse_uploaded_files(sp_files, "Sponsored Products") if sp_files else ({}, [], [], [])
+    sb_reports, sb_raw_records, sb_orig_records, sb_log = parse_uploaded_files(sb_files, "Sponsored Brands") if sb_files else ({}, [], [], [])
+    all_raw_records = sp_raw_records + sb_raw_records
+    all_orig_records = sp_orig_records + sb_orig_records
 
     if sp_log or sb_log:
         with st.sidebar:
@@ -437,7 +452,6 @@ def main():
     if "Campaign Level" in merged_levels and not merged_levels["Campaign Level"].empty:
         raw_camp_df = merged_levels["Campaign Level"].copy()
         
-        # Exact requested columns matching user screenshot
         requested_raw_cols = [
             "Duration", "CampaignName", "BrandID", "BrandName", "CampaignType",
             "Atc", "Clicks", "Cpc", "Cpm", "Daily_budget", "Impressions",
@@ -445,13 +459,11 @@ def main():
             "Spend", "Status"
         ]
         
-        # Ensure Duration is populated
         if "Duration" in raw_camp_df.columns:
             raw_camp_df["Duration"] = duration_val
         else:
             raw_camp_df.insert(0, "Duration", duration_val)
             
-        # Keep only the requested columns that exist in the dataframe
         existing_req_cols = [c for c in requested_raw_cols if c in raw_camp_df.columns]
         consolidated_raw_df = raw_camp_df[existing_req_cols].copy()
         export_sheets["Consolidated_Raw"] = consolidated_raw_df
@@ -587,7 +599,7 @@ def main():
         df_kw_view = compute_metrics(df_kw_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["Keyword_Performance"] = df_kw_view
 
-    # --- MULTI-TAB ANALYTICS ---
+    # --- MULTI-TAB ANALYTICS (INCLUDING BOTH RAW DOWNLOAD TABS) ---
     tabs = st.tabs([
         "🎯 Campaign Level",
         "🏷️ Campaign Type Level",
@@ -596,7 +608,8 @@ def main():
         "🗂️ Category Level",
         "🔑 Keyword Level",
         "💡 Actionable Insights & Waste",
-        "📥 Raw Files Download"
+        "📥 Standard Raw Download",
+        "📥 Original Format Raw Download"
     ])
 
     # TAB 1: CAMPAIGN LEVEL
@@ -725,10 +738,10 @@ def main():
                 st.dataframe(style_table(scale_kw), use_container_width=True, hide_index=True)
                 export_sheets["Scale_Winners"] = scale_kw
 
-    # TAB 8: INDIVIDUAL RAW FILES DOWNLOAD
+    # TAB 8: STANDARD RAW DOWNLOAD
     with tabs[7]:
-        st.subheader("📥 Download Cleaned Individual Raw Reports")
-        st.caption("Download each uploaded raw report separately with properly standardized filenames and numeric metrics fully cleaned.")
+        st.subheader("📥 Download Standardized Cleaned Raw Reports")
+        st.caption("Download each uploaded raw report separately with standardized filenames (e.g., SP_Campaign_Report.xlsx, SB_Keyword_Report.xlsx) and numeric metrics fully cleaned.")
         
         if all_raw_records:
             col_d1, col_d2 = st.columns(2)
@@ -744,6 +757,29 @@ def main():
                         file_name=rec["filename"],
                         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                         key=f"dl_raw_{idx}"
+                    )
+        else:
+            st.info("No raw files uploaded yet.")
+
+    # TAB 9: ORIGINAL FORMAT RAW DOWNLOAD (NEW ADDITIONAL TAB)
+    with tabs[8]:
+        st.subheader("📥 Download Original Format Raw Reports (Metrics Converted to Values)")
+        st.caption("Download all uploaded raw files in their exact original row and column structure, with any text-stored metrics properly converted to numerical values.")
+        
+        if all_orig_records:
+            col_o1, col_o2 = st.columns(2)
+            for idx, rec in enumerate(all_orig_records):
+                target_col = col_o1 if idx % 2 == 0 else col_o2
+                with target_col:
+                    file_bytes = export_single_file_excel(rec["df"])
+                    badge_color = "badge-sp" if rec["ad_format"] == "Sponsored Products" else "badge-sb"
+                    st.markdown(f"<span class='{badge_color}'>{rec['ad_format']}</span> <b>{rec['level']}</b> — <small>{rec['original_name']}</small>", unsafe_allow_html=True)
+                    st.download_button(
+                        label=f"⬇️ Download {rec['filename']}",
+                        data=file_bytes,
+                        file_name=rec['filename'],
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key=f"dl_orig_{idx}"
                     )
         else:
             st.info("No raw files uploaded yet.")
