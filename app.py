@@ -192,6 +192,15 @@ def get_authoritative_totals(channel_reports: dict) -> dict:
 
 
 def export_excel_workbook(sheets_dict: dict) -> bytes:
+    """
+    Exports styled Excel workbook with compact columns fitted tightly to content and header size:
+    - Dark blue header fill (#1B365D) with bold white text
+    - Thin borders on all cells
+    - First column left-aligned & middle-aligned; all metric/other columns center & middle-aligned
+    - Smart number format: whole numbers shown without decimals, decimals rounded to 2 places
+    - Compact, non-oversized column widths fitted closely to column names and data
+    - Frozen header row and filters
+    """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         header_fill = PatternFill(start_color="1B365D", end_color="1B365D", fill_type="solid")
@@ -260,6 +269,7 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
                         else:
                             cell.number_format = "#,##0.00"
 
+            # Compact column width fitting closely to column name and data size without being too large
             for col_idx in range(1, max_col + 1):
                 col_letter = get_column_letter(col_idx)
                 max_len = 0
@@ -267,7 +277,8 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
                     val = ws.cell(row=row_idx, column=col_idx).value
                     if val is not None:
                         max_len = max(max_len, len(str(val)))
-                ws.column_dimensions[col_letter].width = min(max(max_len + 5, 13), 48)
+                # Compact width with tight padding (+3) and sensible limits (min 10, max 32)
+                ws.column_dimensions[col_letter].width = min(max(max_len + 3, 10), 32)
 
     return output.getvalue()
 
