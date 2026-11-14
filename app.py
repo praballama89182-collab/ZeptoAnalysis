@@ -90,10 +90,14 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
+    # --- CROSS-POPULATE CAMPAIGN NAME VARIANTS ACROSS SP & SB ---
     if "CampaignName" in df.columns and "Campaign_name" not in df.columns:
         df["Campaign_name"] = df["CampaignName"]
     elif "Campaign_name" in df.columns and "CampaignName" not in df.columns:
         df["CampaignName"] = df["Campaign_name"]
+    elif "CampaignName" in df.columns and "Campaign_name" in df.columns:
+        df["CampaignName"] = df["CampaignName"].fillna(df["Campaign_name"])
+        df["Campaign_name"] = df["Campaign_name"].fillna(df["CampaignName"])
 
     if "CampaignName" in df.columns:
         def extract_tag(name: str) -> str:
@@ -159,7 +163,6 @@ def style_table(df: pd.DataFrame, row_styler=None):
         {"selector": "td", "props": [("text-align", "center"), ("vertical-align", "middle")]}
     ])
 
-    # Left-align first column in UI for clean hierarchy while keeping metrics middle-aligned
     if len(df.columns) > 0:
         first_col = df.columns[0]
         styler = styler.set_properties(subset=[first_col], **{"text-align": "left", "vertical-align": "middle"})
@@ -189,14 +192,6 @@ def get_authoritative_totals(channel_reports: dict) -> dict:
 
 
 def export_excel_workbook(sheets_dict: dict) -> bytes:
-    """
-    Exports styled Excel workbook:
-    - Dark blue header fill (#1B365D) with bold white text
-    - Thin borders on all cells
-    - First column left-aligned & middle-aligned; all metric/other columns center & middle-aligned
-    - Smart number format: whole numbers shown without decimals, decimals rounded to 2 places
-    - Auto-adjusted column widths and frozen header row
-    """
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         header_fill = PatternFill(start_color="1B365D", end_color="1B365D", fill_type="solid")
@@ -218,7 +213,6 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
             sheet_name = name[:31]
             df_export = df.copy()
 
-            # Convert whole-number floats to clean int in export dataframe so Excel stores/displays cleanly
             for col in df_export.select_dtypes(include=["float", "int"]).columns:
                 df_export[col] = df_export[col].apply(
                     lambda x: int(round(x)) if pd.notna(x) and float(x).is_integer() else (round(float(x), 2) if pd.notna(x) else x)
@@ -227,7 +221,6 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
             df_export.to_excel(writer, sheet_name=sheet_name, index=False)
             ws = writer.sheets[sheet_name]
 
-            # Freeze header row and enable filter
             ws.freeze_panes = "A2"
             ws.auto_filter.ref = ws.dimensions
             ws.row_dimensions[1].height = 28
@@ -235,7 +228,6 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
             max_row = ws.max_row
             max_col = ws.max_column
 
-            # Style Header Row
             for col_idx in range(1, max_col + 1):
                 cell = ws.cell(row=1, column=col_idx)
                 cell.fill = header_fill
@@ -243,7 +235,6 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
                 cell.alignment = header_align
                 cell.border = cell_border
 
-            # Style Data Rows
             for row_idx in range(2, max_row + 1):
                 ws.row_dimensions[row_idx].height = 21
                 is_even = (row_idx % 2 == 0)
@@ -254,13 +245,11 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
                     if is_even:
                         cell.fill = zebra_fill
 
-                    # First column left-aligned & middle-aligned; all other columns center & middle-aligned
                     if col_idx == 1:
                         cell.alignment = first_col_align
                     else:
                         cell.alignment = metric_align
 
-                    # Number formatting: whole numbers without decimals, decimals with 2 decimal places
                     val = cell.value
                     if isinstance(val, int) and not isinstance(val, bool):
                         cell.number_format = "#,##0"
@@ -271,7 +260,6 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
                         else:
                             cell.number_format = "#,##0.00"
 
-            # Auto-fit column widths with generous padding
             for col_idx in range(1, max_col + 1):
                 col_letter = get_column_letter(col_idx)
                 max_len = 0
