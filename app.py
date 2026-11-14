@@ -7,16 +7,6 @@ channel-level KPIs without double-counting, and generates actionable insights.
 """
 
 import io
-import subprocess
-import sys
-
-# Auto-ensure openpyxl and xlsxwriter are installed for Excel support
-try:
-    import openpyxl
-except ImportError:
-    subprocess.check_call([sys.executable, "-m", "pip", "install", "openpyxl", "xlsxwriter"])
-    import openpyxl
-
 import pandas as pd
 import streamlit as st
 
@@ -171,15 +161,6 @@ def style_table(df: pd.DataFrame, row_styler=None):
 
 
 def get_authoritative_totals(channel_reports: dict) -> dict:
-    """
-    Prevents double-counting when multiple granularity files are uploaded for the same channel.
-    Priority order for true channel totals:
-    1. Campaign Level
-    2. City Level
-    3. Category Level
-    4. Product Level
-    5. Keyword Level
-    """
     priority = ["Campaign Level", "City Level", "Category Level", "Product Level", "Keyword Level"]
     for level in priority:
         if level in channel_reports and not channel_reports[level].empty:
