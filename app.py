@@ -92,7 +92,7 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
             s_col = df[col].astype(str).str.replace(",", "", regex=True)
             df[col] = pd.to_numeric(s_col, errors="coerce").fillna(0.0)
 
-    # --- UNIFY CAMPAIGN NAME & ID FIELDS ---
+    # --- UNIFY & ENSURE CAMPAIGN NAME & ID FIELDS ---
     if "CampaignName" not in df.columns and "Campaign_name" in df.columns:
         df["CampaignName"] = df["Campaign_name"]
     elif "Campaign_name" not in df.columns and "CampaignName" in df.columns:
@@ -100,6 +100,8 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
     elif "CampaignName" in df.columns and "Campaign_name" in df.columns:
         df["CampaignName"] = df["CampaignName"].fillna(df["Campaign_name"])
         df["Campaign_name"] = df["Campaign_name"].fillna(df["CampaignName"])
+    elif "CampaignName" not in df.columns and "Campaign_name" not in df.columns:
+        df["CampaignName"] = "Unknown Campaign"
 
     if "CampaignID" not in df.columns and "Campaign_id" in df.columns:
         df["CampaignID"] = df["Campaign_id"]
@@ -181,11 +183,11 @@ def get_authoritative_totals(channel_reports: dict) -> dict:
             df = channel_reports[level]
             return {
                 "source": level,
-                "spend": float(df["Spend"].sum()),
-                "revenue": float(df["Revenue"].sum()),
-                "orders": int(df["Orders"].sum()),
-                "clicks": int(df["Clicks"].sum()),
-                "impressions": int(df["Impressions"].sum()),
+                "spend": float(df["Spend"].sum()) if "Spend" in df.columns else 0.0,
+                "revenue": float(df["Revenue"].sum()) if "Revenue" in df.columns else 0.0,
+                "orders": int(df["Orders"].sum()) if "Orders" in df.columns else 0,
+                "clicks": int(df["Clicks"].sum()) if "Clicks" in df.columns else 0,
+                "impressions": int(df["Impressions"].sum()) if "Impressions" in df.columns else 0,
                 "atc": int(df["Atc"].sum()) if "Atc" in df.columns else 0,
             }
     return {"source": "None", "spend": 0.0, "revenue": 0.0, "orders": 0, "clicks": 0, "impressions": 0, "atc": 0}
@@ -495,97 +497,133 @@ def main():
 
     st.markdown("---")
 
-    # --- BUILD GRANULAR DATAFRAMES ---
+    # --- BUILD GRANULAR DATAFRAMES SAFELY ---
     df_camp_view = pd.DataFrame()
     if "Campaign Level" in merged_levels:
         raw_c = merged_levels["Campaign Level"].copy()
-        grp_cols = ["CampaignName", "Ad Format"]
+        
+        # Safely check available columns for grouping
+        grp_candidates = ["CampaignName", "Ad Format"]
         if "CampaignType" in raw_c.columns:
-            grp_cols.append("CampaignType")
+            grp_candidates.append("CampaignType")
         if "Status" in raw_c.columns:
-            grp_cols.append("Status")
+            grp_candidates.append("Status")
+            
+        grp_cols = [c for c in grp_candidates if c in raw_c.columns]
+        
         agg_dict = {
             "Impressions": "sum", "Clicks": "sum", "Atc": "sum",
             "Spend": "sum", "Orders": "sum", "Revenue": "sum",
             "Same_skus": "sum", "Other_skus": "sum"
         }
         agg_dict = {k: v for k, v in agg_dict.items() if k in raw_c.columns}
-        df_camp_view = raw_c.groupby(grp_cols, as_index=False).agg(agg_dict)
-        df_camp_view = compute_metrics(df_camp_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
-        export_sheets["Campaign_Performance"] = df_camp_view
+        
+        if grp_cols:
+            df_camp_view = raw_c.groupby(grp_cols, as_index=False).agg(agg_dict)
+            df_camp_view = compute_metrics(df_camp_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
+            export_sheets["Campaign_Performance"] = df_camp_view
 
     df_camp_type_view = pd.DataFrame()
-    if "Campaign Level" in merged_levels and "CampaignType" in merged_levels["Campaign Level"].columns:
+    if "Campaign Level" in merged_levels:
         raw_ct = merged_levels["Campaign Level"].copy()
-        raw_ct["CampaignType"] = raw_ct["CampaignType"].fillna("Unassigned / Other")
+        if "CampaignType" not in raw_ct.columns:
+            raw_ct["CampaignType"] = "Unassigned / Other"
+        else:
+            raw_ct["CampaignType"] = raw_ct["CampaignType"].fillna("Unassigned / Other")
+            
         agg_dict = {
             "CampaignName": "nunique", "Impressions": "sum", "Clicks": "sum",
             "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
             "Same_skus": "sum", "Other_skus": "sum"
         }
         agg_dict = {k: v for k, v in agg_dict.items() if k in raw_ct.columns}
-        df_camp_type_view = raw_ct.groupby(["CampaignType", "Ad Format"], as_index=False).agg(agg_dict).rename(columns={"CampaignName": "Campaigns"})
-        df_camp_type_view = compute_metrics(df_camp_type_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
-        export_sheets["Campaign_Type_Performance"] = df_camp_type_view
+        
+        group_keys = [k for k in ["CampaignType", "Ad Format"] if k in raw_ct.columns]
+        if group_keys:
+            df_camp_type_view = raw_ct.groupby(group_keys, as_index=False).agg(agg_dict)
+            if "CampaignName" in df_camp_type_view.columns:
+                df_camp_type_view = df_camp_type_view.rename(columns={"CampaignName": "Campaigns"})
+            df_camp_type_view = compute_metrics(df_camp_type_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
+            export_sheets["Campaign_Type_Performance"] = df_camp_type_view
 
     df_city_view = pd.DataFrame()
     if "City Level" in merged_levels:
         raw_city = merged_levels["City Level"].copy()
-        city_col = next((c for c in raw_city.columns if c.strip().lower() in ["city", "cityname"]), "City")
-        agg_dict = {
-            "Impressions": "sum", "Clicks": "sum",
-            "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
-            "Same_skus": "sum", "Other_skus": "sum"
-        }
-        agg_dict = {k: v for k, v in agg_dict.items() if k in raw_city.columns}
-        df_city_view = raw_city.groupby([city_col, "Ad Format"], as_index=False).agg(agg_dict).rename(columns={city_col: "City"})
-        df_city_view = compute_metrics(df_city_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
-        export_sheets["City_Performance"] = df_city_view
+        city_col = next((c for c in raw_city.columns if c.strip().lower() in ["city", "cityname"]), None)
+        if city_col and "Ad Format" in raw_city.columns:
+            agg_dict = {
+                "Impressions": "sum", "Clicks": "sum",
+                "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
+                "Same_skus": "sum", "Other_skus": "sum"
+            }
+            agg_dict = {k: v for k, v in agg_dict.items() if k in raw_city.columns}
+            df_city_view = raw_city.groupby([city_col, "Ad Format"], as_index=False).agg(agg_dict).rename(columns={city_col: "City"})
+            df_city_view = compute_metrics(df_city_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
+            export_sheets["City_Performance"] = df_city_view
 
     df_prod_view = pd.DataFrame()
     if "Product Level" in merged_levels:
         raw_p = merged_levels["Product Level"].copy()
-        grp_cols = ["ProductName", "Ad Format"]
-        if "Category" in raw_p.columns:
-            grp_cols.append("Category")
-        agg_dict = {
-            "Campaign_name": "nunique", "Impressions": "sum", "Clicks": "sum",
-            "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
-            "Same_skus": "sum", "Other_skus": "sum"
-        }
-        agg_dict = {k: v for k, v in agg_dict.items() if k in raw_p.columns}
-        df_prod_view = raw_p.groupby(grp_cols, as_index=False).agg(agg_dict).rename(columns={"Campaign_name": "Campaigns"})
-        df_prod_view = compute_metrics(df_prod_view).sort_values(by="Revenue", ascending=False).reset_index(drop=True)
-        export_sheets["Product_Performance"] = df_prod_view
+        prod_col = next((c for c in raw_p.columns if c.strip().lower() in ["productname", "product_name"]), None)
+        if prod_col:
+            grp_cols = [prod_col, "Ad Format"]
+            if "Category" in raw_p.columns:
+                grp_cols.append("Category")
+            grp_cols = [c for c in grp_cols if c in raw_p.columns]
+            
+            agg_dict = {
+                "Campaign_name": "nunique" if "Campaign_name" in raw_p.columns else "CampaignName" if "CampaignName" in raw_p.columns else "Spend",
+                "Impressions": "sum", "Clicks": "sum",
+                "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
+                "Same_skus": "sum", "Other_skus": "sum"
+            }
+            agg_dict = {k: v for k, v in agg_dict.items() if k in raw_p.columns}
+            df_prod_view = raw_p.groupby(grp_cols, as_index=False).agg(agg_dict)
+            if prod_col != "ProductName":
+                df_prod_view = df_prod_view.rename(columns={prod_col: "ProductName"})
+            if "Campaign_name" in df_prod_view.columns:
+                df_prod_view = df_prod_view.rename(columns={"Campaign_name": "Campaigns"})
+            df_prod_view = compute_metrics(df_prod_view).sort_values(by="Revenue", ascending=False).reset_index(drop=True)
+            export_sheets["Product_Performance"] = df_prod_view
 
     df_cat_view = pd.DataFrame()
     if "Category Level" in merged_levels:
         raw_cat = merged_levels["Category Level"].copy()
-        agg_dict = {
-            "Campaign_name": "nunique", "Impressions": "sum", "Clicks": "sum",
-            "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
-            "Same_skus": "sum", "Other_skus": "sum"
-        }
-        agg_dict = {k: v for k, v in agg_dict.items() if k in raw_cat.columns}
-        df_cat_view = raw_cat.groupby(["Category", "Ad Format"], as_index=False).agg(agg_dict).rename(columns={"Campaign_name": "Campaigns"})
-        df_cat_view = compute_metrics(df_cat_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
-        export_sheets["Category_Performance"] = df_cat_view
+        if "Category" in raw_cat.columns and "Ad Format" in raw_cat.columns:
+            agg_dict = {
+                "Impressions": "sum", "Clicks": "sum",
+                "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
+                "Same_skus": "sum", "Other_skus": "sum"
+            }
+            agg_dict = {k: v for k, v in agg_dict.items() if k in raw_cat.columns}
+            df_cat_view = raw_cat.groupby(["Category", "Ad Format"], as_index=False).agg(agg_dict)
+            df_cat_view = compute_metrics(df_cat_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
+            export_sheets["Category_Performance"] = df_cat_view
 
     df_kw_view = pd.DataFrame()
     if "Keyword Level" in merged_levels:
         raw_kw = merged_levels["Keyword Level"].copy()
-        grp_cols = ["KeywordName", "Ad Format"]
-        if "KeywordMatchType" in raw_kw.columns:
-            grp_cols.append("KeywordMatchType")
-        agg_dict = {
-            "Campaign_name": "nunique", "Impressions": "sum", "Clicks": "sum",
-            "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
-            "Same_skus": "sum", "Other_skus": "sum"
-        }
-        agg_dict = {k: v for k, v in agg_dict.items() if k in raw_kw.columns}
-        df_kw_view = raw_kw.groupby(grp_cols, as_index=False).agg(agg_dict).rename(columns={"Campaign_name": "Campaigns", "KeywordMatchType": "Match Type"})
-        df_kw_view = compute_metrics(df_kw_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
-        export_sheets["Keyword_Performance"] = df_kw_view
+        kw_col = next((c for c in raw_kw.columns if c.strip().lower() in ["keywordname", "keyword_name"]), None)
+        if kw_col:
+            grp_cols = [kw_col, "Ad Format"]
+            match_col = next((c for c in raw_kw.columns if c.strip().lower() in ["keywordmatchtype", "matchtype", "match_type"]), None)
+            if match_col:
+                grp_cols.append(match_col)
+            grp_cols = [c for c in grp_cols if c in raw_kw.columns]
+
+            agg_dict = {
+                "Impressions": "sum", "Clicks": "sum",
+                "Atc": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum",
+                "Same_skus": "sum", "Other_skus": "sum"
+            }
+            agg_dict = {k: v for k, v in agg_dict.items() if k in raw_kw.columns}
+            df_kw_view = raw_kw.groupby(grp_cols, as_index=False).agg(agg_dict)
+            if kw_col != "KeywordName":
+                df_kw_view = df_kw_view.rename(columns={kw_col: "KeywordName"})
+            if match_col and match_col != "Match Type":
+                df_kw_view = df_kw_view.rename(columns={match_col: "Match Type"})
+            df_kw_view = compute_metrics(df_kw_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
+            export_sheets["Keyword_Performance"] = df_kw_view
 
     # --- 7 CORE ANALYTICAL TABS ---
     tabs = st.tabs([
@@ -611,7 +649,7 @@ def main():
             disp_camp = df_camp_view.copy()
             if fmt_filter != "All":
                 disp_camp = disp_camp[disp_camp["Ad Format"] == fmt_filter]
-            if camp_search:
+            if camp_search and "CampaignName" in disp_camp.columns:
                 disp_camp = disp_camp[disp_camp["CampaignName"].str.contains(camp_search, case=False, na=False)]
 
             st.dataframe(style_table(disp_camp), use_container_width=True, hide_index=True)
@@ -658,10 +696,10 @@ def main():
             if p_fmt != "All":
                 disp_prod = disp_prod[disp_prod["Ad Format"] == p_fmt]
             if p_search:
-                disp_prod = disp_prod[
-                    disp_prod["ProductName"].str.contains(p_search, case=False, na=False) |
-                    disp_prod.get("Category", pd.Series("", index=disp_prod.index)).str.contains(p_search, case=False, na=False)
-                ]
+                mask = disp_prod["ProductName"].str.contains(p_search, case=False, na=False)
+                if "Category" in disp_prod.columns:
+                    mask = mask | disp_prod["Category"].str.contains(p_search, case=False, na=False)
+                disp_prod = disp_prod[mask]
             st.dataframe(style_table(disp_prod), use_container_width=True, hide_index=True)
         else:
             st.info("Upload a **Product Level** report to view SKU performance.")
@@ -689,13 +727,15 @@ def main():
             with k_f2:
                 kw_search = st.text_input("Search Keyword", "", key="kw_search")
             with k_f3:
-                match_opts = ["All"] + sorted(df_kw_view["Match Type"].dropna().unique().tolist()) if "Match Type" in df_kw_view.columns else ["All"]
+                match_opts = ["All"]
+                if "Match Type" in df_kw_view.columns:
+                    match_opts += sorted(df_kw_view["Match Type"].dropna().unique().tolist())
                 match_sel = st.selectbox("Match Type", match_opts, key="kw_match")
 
             disp_kw = df_kw_view.copy()
             if kw_fmt != "All":
                 disp_kw = disp_kw[disp_kw["Ad Format"] == kw_fmt]
-            if kw_search:
+            if kw_search and "KeywordName" in disp_kw.columns:
                 disp_kw = disp_kw[disp_kw["KeywordName"].str.contains(kw_search, case=False, na=False)]
             if match_sel != "All" and "Match Type" in disp_kw.columns:
                 disp_kw = disp_kw[disp_kw["Match Type"] == match_sel]
@@ -708,7 +748,7 @@ def main():
     with tabs[6]:
         st.subheader("💡 Automated Optimization Insights")
 
-        if not df_kw_view.empty:
+        if not df_kw_view.empty and "Orders" in df_kw_view.columns and "Spend" in df_kw_view.columns:
             waste_kw = df_kw_view[(df_kw_view["Orders"] == 0) & (df_kw_view["Spend"] >= waste_spend_min)].sort_values(by="Spend", ascending=False)
             st.markdown(f"#### 🛑 High-Spend Zero-Order Keywords (Spend ≥ ₹{waste_spend_min:,}) — `{len(waste_kw)} found`")
             if not waste_kw.empty:
@@ -717,7 +757,7 @@ def main():
             else:
                 st.success("No keywords exceeded your zero-order spend threshold.")
 
-        if not df_kw_view.empty:
+        if not df_kw_view.empty and "ROAS" in df_kw_view.columns and "Orders" in df_kw_view.columns:
             scale_kw = df_kw_view[(df_kw_view["ROAS"] >= target_roas) & (df_kw_view["Orders"] >= 3)].sort_values(by="Revenue", ascending=False)
             st.markdown(f"#### 🚀 Scale Winners (ROAS ≥ {target_roas:.1f}x & Orders ≥ 3) — `{len(scale_kw)} found`")
             if not scale_kw.empty:
