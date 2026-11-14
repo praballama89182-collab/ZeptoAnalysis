@@ -90,14 +90,24 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
 
-    # --- CROSS-POPULATE CAMPAIGN NAME VARIANTS ACROSS SP & SB ---
-    if "CampaignName" in df.columns and "Campaign_name" not in df.columns:
-        df["Campaign_name"] = df["CampaignName"]
-    elif "Campaign_name" in df.columns and "CampaignName" not in df.columns:
+    # --- UNIFY CAMPAIGN NAME & ID FIELDS ---
+    if "CampaignName" not in df.columns and "Campaign_name" in df.columns:
         df["CampaignName"] = df["Campaign_name"]
+    elif "Campaign_name" not in df.columns and "CampaignName" in df.columns:
+        df["Campaign_name"] = df["CampaignName"]
     elif "CampaignName" in df.columns and "Campaign_name" in df.columns:
         df["CampaignName"] = df["CampaignName"].fillna(df["Campaign_name"])
         df["Campaign_name"] = df["Campaign_name"].fillna(df["CampaignName"])
+
+    if "CampaignID" not in df.columns and "Campaign_id" in df.columns:
+        df["CampaignID"] = df["Campaign_id"]
+    elif "Campaign_id" not in df.columns and "CampaignID" in df.columns:
+        df["Campaign_id"] = df["CampaignID"]
+
+    if "CityName" not in df.columns and "City" in df.columns:
+        df["CityName"] = df["City"]
+    elif "City" not in df.columns and "CityName" in df.columns:
+        df["City"] = df["CityName"]
 
     if "CampaignName" in df.columns:
         def extract_tag(name: str) -> str:
@@ -277,7 +287,6 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
                     val = ws.cell(row=row_idx, column=col_idx).value
                     if val is not None:
                         max_len = max(max_len, len(str(val)))
-                # Compact width with tight padding (+3) and sensible limits (min 10, max 32)
                 ws.column_dimensions[col_letter].width = min(max(max_len + 3, 10), 32)
 
     return output.getvalue()
@@ -423,7 +432,7 @@ def main():
 
     export_sheets = {}
 
-    # --- CONSOLIDATED RAW ACCUMULATION ---
+    # --- CONSOLIDATED RAW ACCUMULATION (STREAMLINED CORE COLUMNS) ---
     consolidated_raw_parts = []
     for f_dict, format_label in [(sp_reports, "Sponsored Products"), (sb_reports, "Sponsored Brands")]:
         for level, df in f_dict.items():
@@ -435,7 +444,27 @@ def main():
 
     if consolidated_raw_parts:
         consolidated_raw_df = pd.concat(consolidated_raw_parts, ignore_index=True)
-        consolidated_raw_df.insert(0, "Duration", duration_val)
+        
+        # Define clean, compact column ordering for Consolidated_Raw
+        preferred_order = [
+            "Duration", "Ad Format", "Report Level",
+            "BrandID", "BrandName",
+            "CampaignName", "CampaignID", "CampaignType", "Status",
+            "CityName", "ProductID", "ProductName", "Category",
+            "KeywordName", "KeywordMatchType",
+            "Impressions", "Clicks", "CTR %", "Spend", "CPC", "CPM",
+            "Orders", "Revenue", "ROAS", "ACOS %", "Atc",
+            "Same_skus", "Other_skus", "Daily_budget"
+        ]
+        existing_cols = [c for c in preferred_order if c in consolidated_raw_df.columns]
+        other_cols = [c for c in consolidated_raw_df.columns if c not in existing_cols]
+        consolidated_raw_df = consolidated_raw_df[existing_cols + other_cols]
+        
+        if "Duration" in consolidated_raw_df.columns:
+            consolidated_raw_df["Duration"] = duration_val
+        else:
+            consolidated_raw_df.insert(0, "Duration", duration_val)
+            
         export_sheets["Consolidated_Raw"] = consolidated_raw_df
 
     if sp_reports and sb_reports:
