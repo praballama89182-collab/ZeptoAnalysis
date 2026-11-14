@@ -141,7 +141,7 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     dec_cols = [
         "Spend", "Revenue", "ROAS", "Robas", "ACOS %", "CTR %",
-        "CPC", "CPM", "ATC Rate %", "CVR %", "AOV", "Halo Share %", "Daily_budget"
+        "CPC", "CPM", "ATC Rate %", "CVR %", "AOV", "Halo Share %", "Daily_budget", "Roas", "Robas"
     ]
     for c in dec_cols:
         if c in df.columns:
@@ -202,7 +202,7 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         header_fill = PatternFill(start_color="1B365D", end_color="1B365D", fill_type="solid")
         zebra_fill = PatternFill(start_color="F4F7FA", end_color="F4F7FA", fill_type="solid")
-        header_font = Font(name="Calibri", size=11, bold=True, color="FFFFFF")
+        header_font = Font(name="Calibri", size=10, bold=True, color="FFFFFF")
         body_font = Font(name="Calibri", size=10, bold=False, color="1E293B")
 
         thin_side = Side(style="thin", color="CBD5E1")
@@ -229,7 +229,7 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
 
             ws.freeze_panes = "A2"
             ws.auto_filter.ref = ws.dimensions
-            ws.row_dimensions[1].height = 28
+            ws.row_dimensions[1].height = 26
 
             max_row = ws.max_row
             max_col = ws.max_column
@@ -242,7 +242,7 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
                 cell.border = cell_border
 
             for row_idx in range(2, max_row + 1):
-                ws.row_dimensions[row_idx].height = 21
+                ws.row_dimensions[row_idx].height = 20
                 is_even = (row_idx % 2 == 0)
                 for col_idx in range(1, max_col + 1):
                     cell = ws.cell(row=row_idx, column=col_idx)
@@ -266,6 +266,7 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
                         else:
                             cell.number_format = "#,##0.00"
 
+            # Highly compact column width fitting tightly to content and header size
             for col_idx in range(1, max_col + 1):
                 col_letter = get_column_letter(col_idx)
                 max_len = 0
@@ -273,7 +274,7 @@ def export_excel_workbook(sheets_dict: dict) -> bytes:
                     val = ws.cell(row=row_idx, column=col_idx).value
                     if val is not None:
                         max_len = max(max_len, len(str(val)))
-                ws.column_dimensions[col_letter].width = min(max(max_len + 3, 10), 32)
+                ws.column_dimensions[col_letter].width = min(max(max_len + 2, 8), 28)
 
     return output.getvalue()
 
@@ -432,13 +433,27 @@ def main():
 
     export_sheets = {}
 
-    all_raw_records = sp_raw_records + sb_raw_records
-    if all_raw_records:
-        consolidated_raw_df = pd.concat([r["df"] for r in all_raw_records], ignore_index=True)
-        if "Duration" in consolidated_raw_df.columns:
-            consolidated_raw_df["Duration"] = duration_val
+    # --- CONSOLIDATED RAW: STRICTLY EXACT REQUESTED COLUMNS FROM CAMPAIGN REPORT ---
+    if "Campaign Level" in merged_levels and not merged_levels["Campaign Level"].empty:
+        raw_camp_df = merged_levels["Campaign Level"].copy()
+        
+        # Exact requested columns matching user screenshot
+        requested_raw_cols = [
+            "Duration", "CampaignName", "BrandID", "BrandName", "CampaignType",
+            "Atc", "Clicks", "Cpc", "Cpm", "Daily_budget", "Impressions",
+            "Orders", "Other_skus", "Revenue", "Roas", "Robas", "Same_skus",
+            "Spend", "Status"
+        ]
+        
+        # Ensure Duration is populated
+        if "Duration" in raw_camp_df.columns:
+            raw_camp_df["Duration"] = duration_val
         else:
-            consolidated_raw_df.insert(0, "Duration", duration_val)
+            raw_camp_df.insert(0, "Duration", duration_val)
+            
+        # Keep only the requested columns that exist in the dataframe
+        existing_req_cols = [c for c in requested_raw_cols if c in raw_camp_df.columns]
+        consolidated_raw_df = raw_camp_df[existing_req_cols].copy()
         export_sheets["Consolidated_Raw"] = consolidated_raw_df
 
     if sp_reports and sb_reports:
@@ -499,7 +514,6 @@ def main():
         df_camp_view = compute_metrics(df_camp_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["Campaign_Performance"] = df_camp_view
 
-    # --- NEW: CAMPAIGN TYPE PERFORMANCE ---
     df_camp_type_view = pd.DataFrame()
     if "Campaign Level" in merged_levels and "CampaignType" in merged_levels["Campaign Level"].columns:
         raw_ct = merged_levels["Campaign Level"].copy()
@@ -573,7 +587,7 @@ def main():
         df_kw_view = compute_metrics(df_kw_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
         export_sheets["Keyword_Performance"] = df_kw_view
 
-    # --- MULTI-TAB ANALYTICS (INCLUDING NEW CAMPAIGN TYPE TAB) ---
+    # --- MULTI-TAB ANALYTICS ---
     tabs = st.tabs([
         "🎯 Campaign Level",
         "🏷️ Campaign Type Level",
@@ -605,7 +619,7 @@ def main():
         else:
             st.info("Upload a **Campaign Level** report to view campaign-wise breakdown.")
 
-    # TAB 2: CAMPAIGN TYPE LEVEL (NEW)
+    # TAB 2: CAMPAIGN TYPE LEVEL
     with tabs[1]:
         st.subheader("🏷️ Campaign Type Performance Breakdown")
         if not df_camp_type_view.empty:
@@ -615,14 +629,6 @@ def main():
                 disp_ct = disp_ct[disp_ct["Ad Format"] == ct_fmt]
 
             st.dataframe(style_table(disp_ct), use_container_width=True, hide_index=True)
-            
-            col_ct1, col_ct2 = st.columns(2)
-            with col_ct1:
-                st.markdown("##### Spend Share by Campaign Type")
-                st.bar_chart(disp_ct.groupby("CampaignType")["Spend"].sum())
-            with col_ct2:
-                st.markdown("##### Revenue Share by Campaign Type")
-                st.bar_chart(disp_ct.groupby("CampaignType")["Revenue"].sum())
         else:
             st.info("Upload a **Campaign Level** report containing `CampaignType` to view campaign type aggregation.")
 
