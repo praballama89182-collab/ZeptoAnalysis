@@ -193,9 +193,6 @@ def get_authoritative_totals(channel_reports: dict) -> dict:
 
 def export_single_file_excel(df: pd.DataFrame) -> bytes:
     output = io.BytesIO()
-    with pd.writer if hasattr(pd, 'ExcelWriter') else pd.ExcelWriter(output, engine="openpyxl") as writer:
-        pass
-    # Helper to export individual clean dataframe to excel bytes
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
         df.to_excel(writer, sheet_name="Sheet1", index=False)
     return output.getvalue()
