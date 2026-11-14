@@ -66,11 +66,11 @@ def identify_zepto_report(df: pd.DataFrame) -> str:
     cols = {c.strip().lower() for c in df.columns}
     if "city" in cols or "cityname" in cols:
         return "City Level"
-    if "productid" in cols or "productname" in cols:
+    if "productid" in cols or "productname" in cols or "product_name" in cols:
         return "Product Level"
-    if "keywordname" in cols or "keywordmatchtype" in cols:
+    if "keywordname" in cols or "keywordmatchtype" in cols or "keyword_name" in cols:
         return "Keyword Level"
-    if "category" in cols and "productid" not in cols:
+    if "category" in cols and "productid" not in cols and "productname" not in cols:
         return "Category Level"
     if "campaignname" in cols or "campaigntype" in cols or "daily_budget" in cols or "campaign_name" in cols:
         return "Campaign Level"
@@ -92,7 +92,7 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
             s_col = df[col].astype(str).str.replace(",", "", regex=True)
             df[col] = pd.to_numeric(s_col, errors="coerce").fillna(0.0)
 
-    # --- UNIFY & ENSURE CAMPAIGN NAME & ID FIELDS ---
+    # --- UNIFY & ENSURE CAMPAIGN & LOCATION FIELDS ---
     if "CampaignName" not in df.columns and "Campaign_name" in df.columns:
         df["CampaignName"] = df["Campaign_name"]
     elif "Campaign_name" not in df.columns and "CampaignName" in df.columns:
@@ -102,11 +102,6 @@ def clean_numeric_cols(df: pd.DataFrame) -> pd.DataFrame:
         df["Campaign_name"] = df["Campaign_name"].fillna(df["CampaignName"])
     elif "CampaignName" not in df.columns and "Campaign_name" not in df.columns:
         df["CampaignName"] = "Unknown Campaign"
-
-    if "CampaignID" not in df.columns and "Campaign_id" in df.columns:
-        df["CampaignID"] = df["Campaign_id"]
-    elif "Campaign_id" not in df.columns and "CampaignID" in df.columns:
-        df["Campaign_id"] = df["CampaignID"]
 
     if "CityName" not in df.columns and "City" in df.columns:
         df["CityName"] = df["City"]
@@ -502,7 +497,6 @@ def main():
     if "Campaign Level" in merged_levels:
         raw_c = merged_levels["Campaign Level"].copy()
         
-        # Safely check available columns for grouping
         grp_candidates = ["CampaignName", "Ad Format"]
         if "CampaignType" in raw_c.columns:
             grp_candidates.append("CampaignType")
