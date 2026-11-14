@@ -21,30 +21,37 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CUSTOM CSS ---
+# --- CUSTOM CSS: soft blue, compact, light tone ---
 st.markdown("""
     <style>
-    .main { background-color: #f8f9fa; }
-    .stMetric {
-        background-color: #ffffff;
-        padding: 14px 18px;
-        border-radius: 10px;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.04);
-    }
-    h1, h2, h3 { color: #1e293b; font-family: 'Inter', 'Helvetica Neue', sans-serif; }
+    .main { background-color: #f7fafd; }
+    .block-container { padding-top: 1rem; padding-bottom: 1rem; }
+    h1 { color: #16324f; font-family: 'Inter', 'Helvetica Neue', sans-serif; }
+    h2, h3 { color: #1e3a5f; font-family: 'Inter', 'Helvetica Neue', sans-serif; }
     [data-testid="stDataFrame"] th, [data-testid="stDataFrame"] td {
         text-align: center !important;
         vertical-align: middle !important;
     }
     .badge-sp {
-        background-color: #ede9fe; color: #5b21b6; padding: 2px 7px;
+        background-color: #e3edfb; color: #2c4a6b; padding: 2px 7px;
         border-radius: 5px; font-weight: 600; font-size: 11px;
     }
     .badge-sb {
         background-color: #dbeafe; color: #1e40af; padding: 2px 7px;
         border-radius: 5px; font-weight: 600; font-size: 11px;
     }
+    .kpi-card {
+        border-radius: 10px;
+        padding: 10px 14px 9px 14px;
+        border: 1px solid #c9dcf2;
+        box-shadow: 0 1px 2px rgba(30,58,95,0.05);
+    }
+    .kpi-label {
+        font-size: 11px; letter-spacing: .05em; text-transform: uppercase;
+        color: #4a6a8a; font-weight: 600;
+    }
+    .kpi-value { font-size: 22px; font-weight: 700; color: #16324f; line-height: 1.25; }
+    .kpi-sub { font-size: 11px; color: #5b7a99; }
     </style>
     """, unsafe_allow_html=True)
 
@@ -58,6 +65,21 @@ def format_smart_number(val):
     if float(val).is_integer():
         return f"{int(round(val)):,}"
     return f"{val:,.2f}"
+
+
+# Soft blue shades for the overview KPI cards (light tone, low contrast).
+KPI_SHADES = ["#eaf3fd", "#e2ecfa", "#dfe9f8", "#e8f0fb", "#e3eefa", "#eaf2fb"]
+
+
+def kpi_card(label, value, sub="", shade="#eaf3fd"):
+    """Compact overview metric card in a soft shade of blue."""
+    st.markdown(
+        f"""<div class="kpi-card" style="background:{shade};">
+        <div class="kpi-label">{label}</div>
+        <div class="kpi-value">{value}</div>
+        <div class="kpi-sub">{sub}</div></div>""",
+        unsafe_allow_html=True,
+    )
 
 
 # --- FILE DETECTION & SCHEMA NORMALIZATION ---
@@ -149,15 +171,18 @@ def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def style_table(df: pd.DataFrame, row_styler=None):
+    """Professional dashboard table: soft blue header, light zebra rows, compact."""
     num_cols = df.select_dtypes(include=["number"]).columns.tolist()
     fmt = {c: format_smart_number for c in num_cols}
 
     styler = df.style.set_properties(**{
         "text-align": "center",
-        "vertical-align": "middle"
+        "vertical-align": "middle",
+        "font-size": "13px",
     }).set_table_styles([
-        {"selector": "th", "props": [("text-align", "center"), ("vertical-align", "middle")]},
-        {"selector": "td", "props": [("text-align", "center"), ("vertical-align", "middle")]}
+        {"selector": "th", "props": [("text-align", "center"), ("vertical-align", "middle"), ("background-color", "#dbeafe"), ("color", "#1e3a5f"), ("font-size", "12px"), ("border", "1px solid #c9dcf2")]},
+        {"selector": "td", "props": [("text-align", "center"), ("vertical-align", "middle"), ("border", "1px solid #e2ecf5")]},
+        {"selector": "tr:nth-child(even)", "props": [("background-color", "#f2f7fd")]},
     ])
 
     if len(df.columns) > 0:
@@ -293,12 +318,12 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
 
             level = identify_zepto_report(df_raw)
             df_cleaned_raw = clean_numeric_cols(df_raw)
-            df_cleaned_raw["Ad Format"] = ad_format_label
 
             prefix = "SP" if ad_format_label == "Sponsored Products" else "SB"
             level_code = level.replace(" Level", "").replace(" ", "_")
             proper_filename = f"{prefix}_{level_code}.xlsx"
 
+            # ZIP raw downloads stay exactly as uploaded (IDs included, no extra columns).
             raw_file_records.append({
                 "filename": proper_filename,
                 "original_name": f.name,
@@ -307,10 +332,17 @@ def parse_uploaded_files(uploaded_files, ad_format_label: str):
                 "df": df_cleaned_raw
             })
 
+            # Analysis copy only: Ad Format added, Brand ID and Campaign ID removed,
+            # so every preview and the Excel export are ID-free while the ZIPs stay intact.
+            df_analysis = df_cleaned_raw.copy()
+            df_analysis["Ad Format"] = ad_format_label
+            _id_cols = {c for c in df_analysis.columns if c.strip().lower() in ("brandid", "campaign_id", "campaignid")}
+            df_analysis = df_analysis.drop(columns=list(_id_cols))
+
             if level in reports:
-                reports[level] = pd.concat([reports[level], df_cleaned_raw], ignore_index=True)
+                reports[level] = pd.concat([reports[level], df_analysis], ignore_index=True)
             else:
-                reports[level] = df_cleaned_raw
+                reports[level] = df_analysis
 
             detected_log.append((f.name, level, len(df_cleaned_raw)))
         except Exception as e:
@@ -421,16 +453,22 @@ def main():
         active_modes.append(f"Sponsored Brands ({len(sb_reports)} levels)")
     st.caption(f"**Active Scope:** {' + '.join(active_modes)}  |  Deduplicated totals across Campaign, City, Product, Category & Keyword exports")
 
-    # --- TOP 6 KEY METRICS ---
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Total Ad Sales", f"₹{format_smart_number(comb_rev)}")
-    m2.metric("Total Ad Spend", f"₹{format_smart_number(comb_spend)}")
-    m3.metric("Ad ROAS", f"{format_smart_number(comb_roas)}x")
-
-    m4, m5, m6 = st.columns(3)
-    m4.metric("Total Orders", f"{comb_orders:,}")
-    m5.metric("Conversion Rate (CVR)", f"{format_smart_number(comb_cvr)}%")
-    m6.metric("Average Order Value (AOV)", f"₹{format_smart_number(comb_aov)}")
+    # --- TOP 6 KEY METRICS: soft blue compact cards ---
+    _acos = (comb_spend / comb_rev * 100) if comb_rev > 0 else 0.0
+    kpi_defs = [
+        ("Total Ad Sales", f"₹{format_smart_number(comb_rev)}", f"ROAS {format_smart_number(comb_roas)}x"),
+        ("Total Ad Spend", f"₹{format_smart_number(comb_spend)}", f"ACOS {format_smart_number(_acos)}%"),
+        ("Ad ROAS", f"{format_smart_number(comb_roas)}x", "Revenue ÷ Spend"),
+        ("Total Orders", f"{comb_orders:,}", f"{comb_clicks:,} clicks"),
+        ("Conversion Rate (CVR)", f"{format_smart_number(comb_cvr)}%", f"{comb_imps:,} impressions"),
+        ("Average Order Value (AOV)", f"₹{format_smart_number(comb_aov)}", "Revenue ÷ Orders"),
+    ]
+    for _row in range(2):
+        _cols = st.columns(3)
+        for _j in range(3):
+            _label, _value, _sub = kpi_defs[_row * 3 + _j]
+            with _cols[_j]:
+                kpi_card(_label, _value, _sub, KPI_SHADES[_row * 3 + _j])
 
     export_sheets = {}
 
@@ -439,7 +477,7 @@ def main():
         raw_camp_df = merged_levels["Campaign Level"].copy()
 
         requested_raw_cols = [
-            "Duration", "CampaignName", "BrandID", "BrandName", "CampaignType",
+            "Duration", "CampaignName", "BrandName", "CampaignType",
             "Atc", "Clicks", "Cpc", "Cpm", "Daily_budget", "Impressions",
             "Orders", "Other_skus", "Revenue", "Roas", "Robas", "Same_skus",
             "Spend", "Status"
@@ -758,6 +796,69 @@ def main():
             if not scale_kw.empty:
                 st.dataframe(style_table(scale_kw), use_container_width=True, hide_index=True)
                 export_sheets["Scale_Winners"] = scale_kw
+
+        # --- ADDITIONAL INSIGHTS ---
+        st.markdown("---")
+        st.markdown("#### 🔍 More Insights")
+
+        # 1. EXACT vs PHRASE keyword match types
+        if not df_kw_view.empty and "Match Type" in df_kw_view.columns:
+            mt_df = df_kw_view.groupby("Match Type", as_index=False).agg(
+                {"Impressions": "sum", "Clicks": "sum", "Spend": "sum", "Orders": "sum", "Revenue": "sum"}
+            )
+            mt_df = compute_metrics(mt_df).sort_values(by="Spend", ascending=False).reset_index(drop=True)
+            st.markdown("##### 🔤 EXACT vs PHRASE Keywords")
+            st.caption("EXACT usually converts better — compare ROAS, CTR and CVR before shifting budget between match types.")
+            st.dataframe(style_table(mt_df), use_container_width=True, hide_index=True)
+            export_sheets["Match_Type_Comparison"] = mt_df
+
+        # 2. Halo champions: campaigns driving orders on other SKUs
+        if not df_camp_view.empty and "Other_skus" in df_camp_view.columns and "Halo Share %" in df_camp_view.columns:
+            halo_df = df_camp_view[df_camp_view["Orders"] >= 10].copy()
+            halo_df = halo_df.sort_values(by="Other_skus", ascending=False).head(5)
+            halo_cols = [c for c in ["CampaignName", "Orders", "Same_skus", "Other_skus", "Halo Share %", "Spend", "Revenue", "ROAS"] if c in halo_df.columns]
+            st.markdown("##### 🌟 Halo Champions — campaigns driving orders on other SKUs")
+            st.caption("High halo share means the campaign sells more than its own SKUs — good for cross-sell, not just direct ROAS.")
+            st.dataframe(style_table(halo_df[halo_cols]), use_container_width=True, hide_index=True)
+            export_sheets["Halo_Champions"] = halo_df[halo_cols]
+
+        # 3. Fix-or-cut: meaningful spend, below target ROAS
+        if not df_camp_view.empty and "ROAS" in df_camp_view.columns and "Spend" in df_camp_view.columns:
+            fix_df = df_camp_view[(df_camp_view["Spend"] >= 1000) & (df_camp_view["ROAS"] < target_roas)].sort_values(by="Spend", ascending=False)
+            st.markdown(f"##### 🔧 Fix or Cut — spend ≥ ₹1,000 and ROAS below {target_roas:.1f}x")
+            if not fix_df.empty:
+                st.caption(f"₹{format_smart_number(fix_df['Spend'].sum())} spend is below your ROAS target — review bids, keywords or creative here first.")
+                fix_cols = [c for c in ["CampaignName", "Spend", "Revenue", "ROAS", "ACOS %", "Orders"] if c in fix_df.columns]
+                st.dataframe(style_table(fix_df[fix_cols]), use_container_width=True, hide_index=True)
+                export_sheets["Fix_or_Cut_Campaigns"] = fix_df[fix_cols]
+            else:
+                st.success("No campaign with spend ≥ ₹1,000 is below your ROAS target.")
+
+        # 4. Zero-sale summary across campaigns, products and keywords (raw rows,
+        # so spend is not hidden when a keyword/product also has revenue elsewhere)
+        zero_rows = []
+        for _lvl, _label in [("Campaign Level", "Campaigns"), ("Product Level", "Products"), ("Keyword Level", "Keywords")]:
+            if _lvl in merged_levels:
+                _raw = merged_levels[_lvl]
+                if "Spend" in _raw.columns and "Revenue" in _raw.columns:
+                    _z = _raw[(_raw["Spend"] > 0) & (_raw["Revenue"] == 0)]
+                    zero_rows.append({"Level": _label, "Zero-sale rows": len(_z), "Wasted spend (₹)": round(float(_z["Spend"].sum()), 2)})
+        if zero_rows:
+            zero_df = pd.DataFrame(zero_rows)
+            st.markdown("##### 🛑 Zero-Sale Summary — spend with no revenue")
+            st.dataframe(style_table(zero_df), use_container_width=True, hide_index=True)
+            export_sheets["Zero_Sale_Summary"] = zero_df
+
+        # 5. Concentration + weakest category, as one-line takeaways
+        if not df_camp_view.empty and "Spend" in df_camp_view.columns and df_camp_view["Spend"].sum() > 0:
+            _top3 = df_camp_view.sort_values(by="Spend", ascending=False).head(3)
+            _share = _top3["Spend"].sum() / df_camp_view["Spend"].sum() * 100
+            st.markdown(f"**Concentration:** top 3 campaigns drive **{format_smart_number(_share)}%** of spend ({', '.join(_top3['CampaignName'].astype(str).tolist())}).")
+        if not df_cat_view.empty and "ROAS" in df_cat_view.columns and "Spend" in df_cat_view.columns:
+            _weak = df_cat_view[df_cat_view["Spend"] >= 1000].sort_values(by="ROAS").head(1)
+            if not _weak.empty:
+                _w = _weak.iloc[0]
+                st.markdown(f"**Weakest category:** {_w['Category']} at **{format_smart_number(_w['ROAS'])}x ROAS** on ₹{format_smart_number(_w['Spend'])} spend.")
 
     # --- ADDITIONAL DOWNLOAD BUTTONS FOR RAW ZIP ARCHIVES (BELOW TABS) ---
     st.markdown("---")
