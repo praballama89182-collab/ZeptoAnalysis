@@ -255,37 +255,47 @@ def _clean_cell(v):
     return "" if s.lower() in ("", "nan", "none") else s
 
 
-def load_category_map(uploaded_file):
-    """Read the user's SKU -> Category sheet (columns: SKU ID, SKU, SKU Name, Category).
-    Returns a DataFrame with those columns plus lowercase _id / _sku / _name helpers,
-    or None if the file can't be read or has no Category column."""
-    try:
-        if uploaded_file.name.lower().endswith(".csv"):
-            df = pd.read_csv(uploaded_file)
-        else:
-            df = pd.read_excel(uploaded_file, engine="openpyxl")
-    except Exception as e:
-        st.error(f"Could not read your category sheet: {e}")
-        return None
-    df.columns = [str(c).strip() for c in df.columns]
-    lower = {c.lower(): c for c in df.columns}
-    id_col = next((lower[k] for k in lower if k in ("sku id", "sku_id", "skuid", "productid", "product_id")), None)
-    sku_col = next((lower[k] for k in lower if k in ("sku", "sku code", "sku_code")), None)
-    name_col = next((lower[k] for k in lower if k in ("sku name", "sku_name", "skuname", "productname", "product_name", "product name")), None)
-    cat_col = next((lower[k] for k in lower if k in ("category", "your category", "sub category", "sub-category", "sub_category")), None)
-    if cat_col is None:
-        st.error("Your category sheet needs a 'Category' column.")
-        return None
-    out = pd.DataFrame({
-        "SKU ID": [_clean_cell(v) for v in (df[id_col] if id_col else [""] * len(df))],
-        "SKU": [_clean_cell(v) for v in (df[sku_col] if sku_col else [""] * len(df))],
-        "SKU Name": [_clean_cell(v) for v in (df[name_col] if name_col else [""] * len(df))],
-        "Category": [_clean_cell(v) for v in df[cat_col]],
-    })
-    out = out[out["Category"] != ""].reset_index(drop=True)
-    if out.empty:
-        st.error("Your category sheet has no rows with a Category filled in.")
-        return None
+# Built-in SKU -> Category mapping (from the user's category sheet, 28 SKUs).
+# No upload needed: the Category tab and the mapper use this list directly.
+# VLOOKUP keys: SKU ID first, then SKU code, then SKU name.
+# Note: 7ed8fcec is "Ring light without stand" — the Zepto item name for that ID
+# is "12 Inch Ring Light Without Stand", not "with stand" as the sheet had it.
+BUILTIN_CATEGORY_MAP = [
+    {"sku_id": "2256eb9f-c5ab-4342-856c-4be4af987674", "sku": "K1", "name": "Kratos Multi Purpose Selfie Stick with Tripod Stand for Mobile Phone with Bluetooth Remote", "category": "Selfie Stick"},
+    {"sku_id": "d2bfc025-01ee-4f04-b140-4c3750a55bb7", "sku": "K9", "name": "Kratos K9 170cm Bluetooth Selfie Stick Tripod with Light for iPhone & Smartphones", "category": "Selfie Stick"},
+    {"sku_id": "aef1f133-8f5a-4303-8bb6-00d2fc7f532f", "sku": "K6", "name": "Kratos 61\" Long Selfie Stick with Tripod| Aluminium| Handle for video Shooting| 6 Section design", "category": "Selfie Stick"},
+    {"sku_id": "7b35d8c7-126c-45cc-ba5d-913ac0db43d4", "sku": "KRATOS K2-", "name": "Kratos 2026 Selfie Stick Tripod with LED Light 3 in 1 for Makeup Selfie Vlogging Smartphones", "category": "Selfie Stick"},
+    {"sku_id": "7f5fb1eb-53e3-49fe-9afe-9208456857e6", "sku": "K7", "name": "K7 Magnetic Bluetooth Selfie Stick Tripod | Compatible with Smartphones, GoPro, Ring Light | Black", "category": "Selfie Stick"},
+    {"sku_id": "2ea25b3a-f68d-49a5-9acd-35b6712fd170", "sku": "K5", "name": "Kratos 62 Inch Long 4 Leg Suport Selfie Stick With Tripod Stand & Remote For Video Recorging", "category": "Selfie Stick"},
+    {"sku_id": "f21f2caa-8449-45a3-bfe8-5a713e72f1d9", "sku": "K12", "name": "Kratos K12 Selfie Stick Tripod with Remote 360 Rotation for GoPro iPhone Smartphones | 170 cm", "category": "Selfie Stick"},
+    {"sku_id": "dbc1ecaa-a0e2-4256-bc1f-424bb3109bf6", "sku": "K14", "name": "Kratos K14 Se", "category": "Selfie Stick"},
+    {"sku_id": "39bd631a-c520-422e-9b39-e0c0e1db581d", "sku": "TR04", "name": "Kratos 7 Feet Tripod Stand | Lightweight | Portable | Aluminum Alloy Light Stand", "category": "Tripod"},
+    {"sku_id": "f9d505c3-4d61-4081-bfce-341d97f4b51a", "sku": "Tripod TR03", "name": "Aluminium Camera Tripod Stand | 51 Inch /130 cm Height | 360 Rotatable Mobile Holder", "category": "Tripod"},
+    {"sku_id": "0f06eaab-38f0-4eb5-8cc0-f6d8fde6e4b8", "sku": "K20", "name": "Kratos 10 Inch Ring Light with 7 Feet Tripod Stand", "category": "Ring light with stand"},
+    {"sku_id": "0649c57a-f3fd-4f4a-a381-638d2b797fce", "sku": "K21", "name": "Kratos 12 Inch Ring Light with 7 Feet Tripod Stand", "category": "Ring light with stand"},
+    {"sku_id": "7ed8fcec-bf18-4943-af4d-8bc98d6abf99", "sku": "Kratos Ring lig", "name": "Kratos 12 Inch Ring Light Without Stand", "category": "Ring light without stand"},
+    {"sku_id": "1fc45586-2758-4f85-b3af-e72fbabf58ab", "sku": "Kratos Ring lig", "name": "Kratos 10 Inc", "category": "Ring light without stand"},
+    {"sku_id": "f1b18b2c-463a-43da-9c9a-12ac29f35890", "sku": "KMW-01", "name": "KMW 01 Wireless Microphone | Plug and Play | 20m Range | High Sensitivity | Wide Compatibility, Clear Sound | Type-C & iOS Connector Type", "category": "Wireless mic"},
+    {"sku_id": "0c550e9f-eb61-4e19-b05a-402bde051e1e", "sku": "KMW-02", "name": "KMW 02 Dual Wireless Mic | Plug and Play | 20m Wireless Range | High Sensitivity | Wide Compatibility Sound | Smartphones, Laptops", "category": "Wireless mic"},
+    {"sku_id": "f0160fbb-5611-40f7-9c7b-762b90862194", "sku": "KMW-03", "name": "KMW 03 Wireless Microphone | Plug and Play | 20m Range | High Sensitivity | Wide Compatibility Sound", "category": "Wireless mic"},
+    {"sku_id": "43634818-30bf-47cd-9bb8-e1b1454dedb8", "sku": "T2 65 W Charg", "name": "Kratos 65W Fast Charger with USB A to Type C Cable | For OnePlus, Realme, Redmi, Oppo, Vivo", "category": "Charger"},
+    {"sku_id": "a041a89d-5c71-4245-9a71-f8e50615bcae", "sku": "Nothing Charg", "name": "Kratos 45W Fast Charger Type C Adapter | For Nothing Phone 3A, 2A, 2, 1, CMF Phone 1 | White", "category": "Charger"},
+    {"sku_id": "d220406e-10bd-4592-b114-0e022b1b5fe3", "sku": "Pro Charger", "name": "Kratos Gear Up Power Series Pro Type C Fast Charger | 25W Fast Charge", "category": "Charger"},
+    {"sku_id": "87474cc3-7c83-4ad4-97b5-0567bdbc03ab", "sku": "B4", "name": "Kratos B4 Mobile Holder for Bike with One-Touch Lock", "category": "Mobile hodler"},
+    {"sku_id": "086405b7-383c-40da-984f-ae1e24157b4b", "sku": "X3", "name": "Kratos Premium Mobile Holder for Car with Back Button Unlocking Mechanism| 360 Degree Rotatable", "category": "Mobile hodler"},
+    {"sku_id": "b4d93b0c-3b8d-4446-9f41-19cba27d9a91", "sku": "NEW X2", "name": "Kratos windshield Car Mobile Holder with one click | 360 Degree Rotatable| Multiple View Angles", "category": "Mobile hodler"},
+    {"sku_id": "1a9b7dfd-68b8-4123-9597-0f1ed869b40c", "sku": "M1", "name": "Kratos Rotatable Foldable Mobile & Tablet Stand 360 Degree Multiple Adjustments Anti Shake Design", "category": "Mobile hodler"},
+    {"sku_id": "027b30e7-3365-4174-b9d5-9487ca749293", "sku": "Legend champ", "name": "Kratos Legend Champ Power Bank 20000mAh, Fast Charging 22.5W, Triple Output,USB Type C Connector, PD Quick Charge Power Bank for iPhone, Android & Other Phones, BIS Certified,Made in India - Black", "category": "Power Bank"},
+    {"sku_id": "253143db-02b6-4a80-8d5f-a116a86fdf92", "sku": "old champ", "name": "Kratos Legend Champ Power Bank | Fast Charging | 22.5W Quick Charge | Black - 20000 mAh", "category": "Power Bank"},
+    {"sku_id": "3814dface-5718-4f19-a1e5-34a2e0dc1c22", "sku": "Mechanical Po", "name": "Kratos PB03 S", "category": "Power Bank"},
+    {"sku_id": "7dbb5356-ef5c-41b7-acfe-9c5dbd8efb97", "sku": "Star Buds", "name": "Kratos Star Buds TWS Earbuds | Bluetooth 5.3 | 30H Playtime | Noise Isolation | Type-C | IPX5", "category": "TWS"},
+]
+
+
+def get_category_map():
+    """The built-in category list as a DataFrame, with lowercase _id / _sku / _name helpers."""
+    out = pd.DataFrame(BUILTIN_CATEGORY_MAP)
+    out = out.rename(columns={"sku_id": "SKU ID", "sku": "SKU", "name": "SKU Name", "category": "Category"})
     out["_id"] = out["SKU ID"].str.lower()
     out["_sku"] = out["SKU"].str.lower()
     out["_name"] = out["SKU Name"].str.lower()
@@ -293,35 +303,35 @@ def load_category_map(uploaded_file):
 
 
 def lookup_user_row(query, cat_map):
-    """VLOOKUP one value in the user's category sheet: SKU ID, then SKU code, then SKU Name.
+    """VLOOKUP one value in the built-in category list: SKU ID, then SKU code, then SKU Name.
     Returns (row, how) or (None, None)."""
     q = str(query).strip().lower()
     if not q or q == "nan":
         return None, None
     m = cat_map[cat_map["_id"] == q]
     if len(m) >= 1:
-        return m.iloc[0], "your sheet (SKU ID)"
+        return m.iloc[0], "built-in list (SKU ID)"
     m = cat_map[cat_map["_sku"] == q]
     if len(m) >= 1:
-        return m.iloc[0], "your sheet (SKU)"
+        return m.iloc[0], "built-in list (SKU)"
     m = cat_map[cat_map["_name"] == q]
     if len(m) >= 1:
-        return m.iloc[0], "your sheet (SKU name, exact)"
+        return m.iloc[0], "built-in list (SKU name, exact)"
     m = cat_map[cat_map["_name"].str.contains(q, regex=False)]
     if len(m) == 1:
-        return m.iloc[0], "your sheet (SKU name)"
+        return m.iloc[0], "built-in list (SKU name)"
     if len(m) > 1:
         cats = m["Category"].dropna().unique()
         if len(cats) == 1:
-            return m.iloc[0], "your sheet (SKU name, shared category)"
+            return m.iloc[0], "built-in list (SKU name, shared category)"
     m = cat_map[cat_map["_name"].apply(lambda n: bool(n) and n in q)]
     if len(m) == 1:
-        return m.iloc[0], "your sheet (SKU name, contains)"
+        return m.iloc[0], "built-in list (SKU name, contains)"
     return None, None
 
 
 def lookup_user_category(query, cat_map):
-    """VLOOKUP just the category for one value in the user's category sheet."""
+    """VLOOKUP just the category for one value in the built-in category list."""
     row, how = lookup_user_row(query, cat_map)
     if row is None:
         return None, None
@@ -330,7 +340,7 @@ def lookup_user_category(query, cat_map):
 
 def map_categories(sku_names, prod_df, cat_map=None):
     """Map a list of SKU names / SKU IDs to SKU ID, SKU and Category.
-    With the user's category sheet uploaded, that sheet is tried first
+    The built-in category list is tried first
     (VLOOKUP by SKU ID, then SKU code, then SKU name) and only the user's
     categories are ever assigned. Without it, the Zepto Product report is
     used, with a best-fit category inferred for unmatched names.
@@ -369,7 +379,7 @@ def map_categories(sku_names, prod_df, cat_map=None):
                     continue
             if cat_map is not None:
                 out.append({"SKU Name": str(name), "SKU ID": "", "SKU": "", "Category": "",
-                            "Match": "not in your category sheet — no category assigned"})
+                            "Match": "not in the built-in category list — no category assigned"})
                 continue
             cat, reason = suggest_category(name, prod)
             if cat:
@@ -384,7 +394,7 @@ def map_categories(sku_names, prod_df, cat_map=None):
         _note = ""
         if user_cats is not None and _cat not in user_cats:
             _cat = ""
-            _note = " — category not in your sheet"
+            _note = " — category not in the built-in list"
         if pid in used_ids:
             out.append({"SKU Name": row["ProductName"], "SKU ID": pid, "SKU": row["ProductName"],
                         "Category": _cat,
@@ -880,7 +890,6 @@ def main():
             if prod_col != "SKU":
                 df_cat_sku_view = df_cat_sku_view.rename(columns={prod_col: "SKU"})
             df_cat_sku_view = compute_metrics(df_cat_sku_view).sort_values(by=["Category", "Spend"], ascending=[True, False]).reset_index(drop=True)
-            export_sheets["Category_by_SKU"] = df_cat_sku_view
 
     df_kw_view = pd.DataFrame()
     if "Keyword Level" in merged_levels:
@@ -907,14 +916,13 @@ def main():
             df_kw_view = compute_metrics(df_kw_view).sort_values(by="Spend", ascending=False).reset_index(drop=True)
             export_sheets["Keyword_Performance"] = df_kw_view
 
-    # --- 8 CORE ANALYTICAL TABS ---
+    # --- 7 CORE ANALYTICAL TABS ---
     tabs = st.tabs([
         "🎯 Campaign Level",
         "🏷️ Campaign Type Level",
         "🏙️ City Level",
         "📦 Product (SKU) Level",
         "🗂️ Category Level",
-        "🔗 Category by SKU",
         "🔑 Keyword Level",
         "💡 Actionable Insights & Waste"
     ])
@@ -987,10 +995,48 @@ def main():
         else:
             st.info("Upload a **Product Level** report to view SKU performance.")
 
-    # TAB 5: CATEGORY LEVEL
+    # TAB 5: CATEGORY LEVEL — your categories are built into the app (no upload needed)
     with tabs[4]:
         st.subheader("🗂️ Category-Wise Performance")
-        if not df_cat_view.empty:
+        cat_map = get_category_map()
+        st.caption(f"Categories built into the app: {cat_map['Category'].nunique()} categories across {len(cat_map)} SKUs — {', '.join(sorted(cat_map['Category'].unique()))}. VLOOKUP by SKU ID, then SKU, then SKU name.")
+
+        _cs = pd.DataFrame()
+        if not df_cat_sku_view.empty:
+            _cs = df_cat_sku_view.copy()
+
+            def _your_cat(r):
+                cat, _ = lookup_user_category(r.get("SKU ID", ""), cat_map)
+                if cat:
+                    return cat
+                cat, _ = lookup_user_category(r.get("SKU", ""), cat_map)
+                return cat or ""
+
+            _cs["Your Category"] = _cs.apply(_your_cat, axis=1)
+            _cols = list(_cs.columns)
+            _cols.remove("Your Category")
+            _pos = _cols.index("Category") + 1 if "Category" in _cols else len(_cols)
+            _cols.insert(_pos, "Your Category")
+            _cs = _cs[_cols]
+
+        if not _cs.empty and _cs["Your Category"].astype(str).str.strip().ne("").any():
+            cat_fmt = st.radio("Ad Format", ["All", "Sponsored Products", "Sponsored Brands"], horizontal=True, key="cat_fmt")
+            if cat_fmt != "All":
+                _cs = _cs[_cs["Ad Format"] == cat_fmt]
+
+            _yc = _cs[_cs["Your Category"].astype(str).str.strip() != ""]
+            if not _yc.empty:
+                _agg = {k: "sum" for k in ["Impressions", "Clicks", "Atc", "Spend", "Orders", "Revenue", "Same_skus", "Other_skus"] if k in _yc.columns}
+                df_your_cat = _yc.groupby("Your Category", as_index=False).agg(_agg)
+                df_your_cat = compute_metrics(df_your_cat).sort_values(by="Spend", ascending=False).reset_index(drop=True)
+                st.markdown("##### 🗂️ Category analysis — your categories")
+                st.caption("Spend, revenue and ROAS per category, built from the Product report by VLOOKUP on SKU ID / SKU name.")
+                st.dataframe(style_table(df_your_cat), use_container_width=True, hide_index=True)
+                export_sheets["Category_Your_Categories"] = df_your_cat
+
+            st.markdown("##### 🔗 SKU mapping — your category per SKU")
+            st.dataframe(style_table(_cs), use_container_width=True, hide_index=True)
+        elif not df_cat_view.empty:
             cat_fmt = st.radio("Ad Format", ["All", "Sponsored Products", "Sponsored Brands"], horizontal=True, key="cat_fmt")
             disp_cat = df_cat_view.copy()
             if cat_fmt != "All":
@@ -998,70 +1044,11 @@ def main():
 
             st.dataframe(style_table(disp_cat), use_container_width=True, hide_index=True)
         else:
-            st.info("Upload a **Category Level** report to view category-level spend and ROAS.")
-
-    # TAB 6: CATEGORY BY SKU
-    with tabs[5]:
-        st.subheader("🔗 Category by SKU — every SKU mapped to its category")
-
-        st.markdown("##### 📋 Your category sheet (optional)")
-        st.caption("Upload your own SKU → Category sheet (columns: SKU ID, SKU, SKU Name, Category). The category analysis below then uses YOUR categories, mapped by VLOOKUP on SKU ID first, then SKU, then SKU name. Without it, the Zepto report's own categories are used.")
-        cat_map_file = st.file_uploader("Upload your category sheet (.xlsx / .csv)", type=["xlsx", "xls", "csv"], key="cat_map_file")
-        cat_map = load_category_map(cat_map_file) if cat_map_file is not None else None
-        if cat_map is not None:
-            st.caption(f"Your categories loaded: {cat_map['Category'].nunique()} categories across {len(cat_map)} SKUs — {', '.join(sorted(cat_map['Category'].unique()))}.")
-
-        if not df_cat_sku_view.empty:
-            cs_f1, cs_f2 = st.columns([1.2, 2])
-            with cs_f1:
-                cs_fmt = st.radio("Ad Format", ["All", "Sponsored Products", "Sponsored Brands"], horizontal=True, key="catsku_fmt")
-            with cs_f2:
-                cs_search = st.text_input("Search SKU / SKU ID / Category", "", key="catsku_search")
-
-            disp_cs = df_cat_sku_view.copy()
-            _full_cs = disp_cs
-            if cat_map is not None:
-                def _your_cat(r):
-                    cat, _ = lookup_user_category(r.get("SKU ID", ""), cat_map)
-                    if cat:
-                        return cat
-                    cat, _ = lookup_user_category(r.get("SKU", ""), cat_map)
-                    return cat or ""
-                disp_cs["Your Category"] = disp_cs.apply(_your_cat, axis=1)
-                _cols = list(disp_cs.columns)
-                _cols.remove("Your Category")
-                _pos = _cols.index("Category") + 1 if "Category" in _cols else len(_cols)
-                _cols.insert(_pos, "Your Category")
-                disp_cs = disp_cs[_cols]
-                _full_cs = disp_cs
-                export_sheets["Category_by_SKU"] = disp_cs
-            if cs_fmt != "All":
-                disp_cs = disp_cs[disp_cs["Ad Format"] == cs_fmt]
-            if cs_search:
-                _mask = pd.Series(False, index=disp_cs.index)
-                for _c in ["SKU", "SKU ID", "Category", "Your Category"]:
-                    if _c in disp_cs.columns:
-                        _mask = _mask | disp_cs[_c].astype(str).str.contains(cs_search, case=False, na=False)
-                disp_cs = disp_cs[_mask]
-            st.dataframe(style_table(disp_cs), use_container_width=True, hide_index=True)
-
-            # Category analysis with YOUR categories: spend / revenue / ROAS per sub-category.
-            if cat_map is not None:
-                _yc = _full_cs[_full_cs["Your Category"].astype(str).str.strip() != ""]
-                if not _yc.empty:
-                    _agg = {k: "sum" for k in ["Impressions", "Clicks", "Atc", "Spend", "Orders", "Revenue", "Same_skus", "Other_skus"] if k in _yc.columns}
-                    df_your_cat = _yc.groupby("Your Category", as_index=False).agg(_agg)
-                    df_your_cat = compute_metrics(df_your_cat).sort_values(by="Spend", ascending=False).reset_index(drop=True)
-                    st.markdown("##### 🗂️ Category analysis — your categories")
-                    st.caption("Spend, revenue and ROAS per category from your sheet, built from the Product report by VLOOKUP on SKU ID / SKU name.")
-                    st.dataframe(style_table(df_your_cat), use_container_width=True, hide_index=True)
-                    export_sheets["Category_Your_Categories"] = df_your_cat
-        else:
-            st.info("Upload a **Product Level** report (it carries SKU ID, SKU and Category) to map categories by SKU.")
+            st.info("Upload a **Category Level** report to view category-level spend and ROAS, or upload a **Product Level** report to see your own categories.")
 
         st.markdown("---")
         st.markdown("##### 🔍 Map your own SKU list")
-        st.caption("Paste SKU names, SKU IDs or SKU codes (one per line), or upload your sheet. Each value is looked up in your category sheet first — by SKU ID, then SKU, then SKU name — and only your categories are assigned. Anything not in your sheet falls back to the Zepto Product report, and is flagged in the Match column.")
+        st.caption("Paste SKU names, SKU IDs or SKU codes (one per line), or upload your sheet. Each value is looked up in the built-in category list first — by SKU ID, then SKU, then SKU name — and only your categories are assigned. Anything not in the list falls back to the Zepto Product report, and is flagged in the Match column.")
         map_input = st.text_area("SKU names, SKU IDs or SKU codes (one per line)", "", key="catsku_map_input", height=120)
         map_file = st.file_uploader("Or upload your SKU list (.xlsx / .csv with a 'SKU Name' column)", type=["xlsx", "xls", "csv"], key="catsku_map_file")
         if st.button("Map categories", key="catsku_map_btn"):
@@ -1089,8 +1076,8 @@ def main():
                 _n_ok = int((_mapped["Category"].astype(str).str.strip() != "").sum())
                 st.caption(f"{_n_ok} of {len(_mapped)} have a category; the rest are flagged in the Match column.")
 
-    # TAB 7: KEYWORD LEVEL
-    with tabs[6]:
+    # TAB 6: KEYWORD LEVEL
+    with tabs[5]:
         st.subheader("🔑 Keyword-Wise Performance")
         if not df_kw_view.empty:
             k_f1, k_f2, k_f3 = st.columns([1.3, 1.7, 1])
@@ -1116,8 +1103,8 @@ def main():
         else:
             st.info("Upload a **Keyword Level** report to view keyword performance.")
 
-    # TAB 8: ACTIONABLE INSIGHTS & WASTE DETECTOR
-    with tabs[7]:
+    # TAB 7: ACTIONABLE INSIGHTS & WASTE DETECTOR
+    with tabs[6]:
         st.subheader("💡 Automated Optimization Insights")
 
         if not df_kw_view.empty and "Orders" in df_kw_view.columns and "Spend" in df_kw_view.columns:
